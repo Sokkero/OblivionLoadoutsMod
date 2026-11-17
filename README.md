@@ -2,7 +2,12 @@
 
 OBSE64 plugin. Switch between 5 saved sets of worn gear. **No item is ever moved.** No UI yet.
 
-**Status: written, NOT compiled, NOT tested.**
+**Status: v0.1.2. Compiled. Hotkey switching and the combat block tested in game (2026-11-17).**
+
+Known problems:
+
+- All characters share one saved-data key (`UI_UserInputText_1_720_0`, a text token, not the name). See `HANDOVER.md`.
+- Not yet tested: allies fighting next to you; the beeps.
 
 ## What it does
 
@@ -12,8 +17,8 @@ OBSE64 plugin. Switch between 5 saved sets of worn gear. **No item is ever moved
   1. Save the gear worn now as A.
   2. Take off every piece that B does not hold. A piece that both hold stays on.
   3. Equip each piece of B that is still in the inventory. Missing pieces are skipped.
-- Gear = armour, shields, clothing, rings, amulets, ammo. Weapons are off (`kIncludeWeapons` in `Loadouts.cpp`).
-- Blocked in combat.
+- Gear = every equipped item: armour, shields, clothing, rings, amulets, ammo, weapons, torches.
+- Blocked while actors fight the player, with a HUD message. Fights between NPCs do not block.
 - Feedback: normal beep = done, error beep = refused. Details in the log.
 - **The first switch to a loadout that was never saved takes everything off.** This follows the spec.
 
@@ -27,11 +32,12 @@ It is not part of the save file (OBSE64 has no save data interface). Loading an 
 Needs Windows, Git, Visual Studio (MSVC, C++23) and [xmake](https://xmake.io).
 
 ```
-git init
-git submodule add https://github.com/libxse/commonlibob64.git lib/commonlibob64
-git submodule update --init --recursive
+git clone --recursive <this repo>
+cd <repo folder>
 xmake build GearLoadouts
 ```
+
+If you cloned without `--recursive`, run `git submodule update --init --recursive` first.
 
 Run xmake from PowerShell. Edit `author` in `xmake.lua` and the name in `NOTICE.md` first.
 The DLL lands in `build\...\GearLoadouts.dll`. Copy it to
@@ -46,12 +52,13 @@ The DLL lands in `build\...\GearLoadouts.dll`. Copy it to
 ## First test
 
 1. Log: `Documents\My Games\Oblivion Remastered\OBSE\Logs\GearLoadouts.log`. Look for
-   `Gear Loadouts 0.1.0 loaded`, `OBSE message 2`, `plugins loaded by the game`, `tes thread: ... now drains`.
+   `Gear Loadouts 0.1.2 loaded`, `OBSE message 2`, `plugins loaded by the game`, `tes thread: ... now drains`.
 2. Wear set A. Press **Ctrl+Numpad1**. Expect: all gear off, one beep.
 3. Wear set B. Press **Ctrl+Numpad0**. Expect: set A back on.
 4. Press **Ctrl+Numpad1**. Expect: set B back on.
 5. Put the same helmet in both sets. Expect: it stays on across the switch.
-6. Send the log and say what you saw.
+6. Fight an enemy that attacks you. Press a hotkey. Expect: error beep, `refused: in combat` in the log.
+7. Send the log and say what you saw.
 
 ## Licence
 

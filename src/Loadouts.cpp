@@ -9,6 +9,8 @@
 
 #include "Loadouts.h"
 
+#include "Console.h"
+#include "GameThread.h"
 #include "TesThread.h"
 
 #include <cctype>
@@ -18,8 +20,9 @@ namespace loadouts
 {
 	namespace
 	{
-		// Weapons are not part of the first version (the owner's slot list: armour, shield, rings, amulet, clothing, ammo).
-		constexpr bool kIncludeWeapons = false;
+		// Every equipped item is tracked (the owner, 2026-11-17): armour, shields, clothing, rings, amulets, ammo,
+		// weapons (bows and staffs too) and torches. Slots 1 (hair) and 15 (tail) are body parts, never items.
+		constexpr bool kIncludeWeapons = true;
 
 		struct Saved
 		{
@@ -84,13 +87,13 @@ namespace loadouts
 
 		bool IsGear(RE::TESBoundObject* a_object)
 		{
-			// Armour (shields too), clothing (rings and amulets are clothing), ammunition. Nameless items are other
-			// mods' hidden pieces and are never touched (the original's rule).
+			// Armour (shields too), clothing (rings and amulets are clothing), ammunition, weapons, torches (Light).
+			// Nameless items are other mods' hidden pieces and are never touched (the original's rule).
 			if (!a_object) {
 				return false;
 			}
 			const auto t = a_object->GetFormType();
-			if (t != RE::FormType::Armor && t != RE::FormType::Clothing && t != RE::FormType::Ammo &&
+			if (t != RE::FormType::Armor && t != RE::FormType::Clothing && t != RE::FormType::Ammo && t != RE::FormType::Light &&
 				!(kIncludeWeapons && t == RE::FormType::Weapon)) {
 				return false;
 			}
@@ -458,8 +461,32 @@ namespace loadouts
 			a_why = "no such loadout";
 			return false;
 		}
-		if (player->IsInCombat(false)) {
+		// Combat check. Actor::IsInCombat, GetCombatTarget and GetCombatController all said "no combat" for the player in
+		// a real fight (tested 2026-11-17). These two PlayerCharacter fields do work (same day, in game):
+		//   numberActorsInCombat (+0xB10): -1 out of combat, N while actors fight the player.
+		//   playerCombatList (+0x828): null out of combat, the actors fighting the player while in combat.
+		// Two NPCs fighting each other without the player changed neither.
+		// After a won fight the list went back to null at once, but numberActorsInCombat stayed 1 (at least 7 s, test
+		// 21:18). So only the list blocks; the counter is logged for information.
+		int         listCount = 0;
+		std::string listNames;
+		if (player->playerCombatList) {
+			for (RE::TESObjectREFR* ref : *player->playerCombatList) {
+				if (!ref) {
+					continue;
+				}
+				if (++listCount <= 3) {
+					listNames += std::format("{}{}", listNames.empty() ? "" : ", ", NameOf(ref->GetObjectReference()));
+				}
+			}
+		}
+		logger::info("combat check: actorsInCombat={} list={} ({})", player->numberActorsInCombat,
+			player->playerCombatList ? std::to_string(listCount) : std::string("null"), listNames);
+		if (listCount > 0) {
 			a_why = "in combat";
+			if (gamethread::Installed()) {
+				gamethread::Post([] { console::Notify("You cannot change your loadout during combat."); });   // Unreal thread only
+			}
 			return false;
 		}
 		if (!testhread::Installed()) {

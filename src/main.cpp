@@ -6,6 +6,7 @@
 //   Ctrl + Numpad 0  -> Default      Ctrl + Numpad 1..4 -> Loadout 1..4
 // Feedback: the log, and a system sound (normal beep = done, error beep = refused).
 
+#include "GameThread.h"
 #include "Loadouts.h"
 #include "TesThread.h"
 
@@ -46,6 +47,10 @@ namespace
 			return;
 		}
 		logger::info("OBSE message {} from '{}'", a_msg->type, a_msg->sender ? a_msg->sender : "?");
+		// the Unreal game thread (HUD messages through the console): try at each message until the engine object exists
+		if (!gamethread::Installed() && !gamethread::Install() && a_msg->type == OBSE::MessagingInterface::kDataLoaded) {
+			logger::error("the game thread hook could not be installed - no HUD messages");
+		}
 		if (a_msg->type == OBSE::MessagingInterface::kDataLoaded) {
 			loadouts::Init();
 			testhread::SetTick(&OnTick);
