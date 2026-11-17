@@ -6,7 +6,7 @@ OBSE64 plugin. Switch between 5 saved sets of worn gear. **No item is ever moved
 
 Known problems:
 
-- All characters share one saved-data key (`UI_UserInputText_1_720_0`, a text token, not the name). See `HANDOVER.md`.
+- Each character has its own loadouts (key = the character GUID from the save system). Tested with two characters.
 - Not yet tested: allies fighting next to you; the beeps.
 
 ## What it does

@@ -5,7 +5,7 @@
 // Adapted from Simple Loadout System (Oblivion Remastered) by ApocryphaRealm, GPL-3.0-or-later (see NOTICE.md),
 // src/Console.h/.cpp and the parts of src/Reflect.cpp it needs. Taken: UKismetSystemLibrary::ExecuteConsoleCommand
 // through ProcessEvent with a hand-laid parameter frame, the player controller lookup, the property-offset reader and
-// its self-check. New here: Notify(). Modified 2026-11-17.
+// its self-check (now in Reflect.cpp). New here: Notify(). Modified 2026-11-17.
 //
 // Game thread only (GameThread.h), never the TES thread.
 

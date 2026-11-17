@@ -76,7 +76,9 @@ The DLL lands in `build\windows\x64\releasedbg\GearLoadouts.dll`. The build work
 | `src/Loadouts.h/.cpp` | Logic. `Request(to, why)` checks: player, index, combat (see section 6), hook, busy. Then it posts `Switch(to)` to the TES thread. |
 | `src/TesThread.h/.cpp` | From SLS plus `SetTick`. MinHook on the main-loop call. All inventory changes MUST run on this thread. Other threads crash. |
 | `src/GameThread.h/.cpp` | Task queue from SLS. MinHook on `UEngine::Tick` (vtable slot 0x5F of `UEngine::GetSingleton()`). Install is tried at each OBSE message until the engine object exists. Runs posted tasks on the **Unreal game thread** (not the TES thread). The SLS XInput import chain was dropped: in game, another module replaced the import entry after 4 calls (log 21:39). |
-| `src/Console.h/.cpp` | From SLS (`Console.cpp` + parts of `Reflect.cpp`). Runs console commands via `KismetSystemLibrary::ExecuteConsoleCommand`. `Notify(text)` runs `Message "text"`. Unreal game thread only. |
+| `src/Reflect.h/.cpp` | From SLS. Read Unreal properties by name; self-check; `IsLive`; `Instances`. Game thread only. |
+| `src/CharacterKey.h/.cpp` | New. Reads the loaded character GUID (`VAltarSaveIdentificationData.CharacterId`). Game thread only. |
+| `src/Console.h/.cpp` | From SLS. Runs console commands via `KismetSystemLibrary::ExecuteConsoleCommand`. `Notify(text)` runs `Message "text"`. Unreal game thread only. |
 | `src/Logger.h`, `src/Scan.h`, `src/pch.h` | Copied from SLS, unchanged. |
 | `xmake.lua` | `GearLoadouts` 0.1.2 (do not change, see section 12), GPL-3.0-or-later, C++23, packages `minhook`, `nlohmann_json`, rule `commonlibob64.plugin`, links `user32`. `author = "CHANGE ME"`. |
 | `NOTICE.md`, `LICENSE`, `EXCEPTIONS`, `THIRD_PARTY_NOTICES.md` | Licence files. Put the real name in `NOTICE.md` and `xmake.lua`. |
@@ -121,11 +123,12 @@ Storage: `GearLoadouts.json` next to the DLL. Per character key. Items are `{plu
 ## 7. Open bugs and questions (priority order)
 
 1. ~~Combat check does not block.~~ Fixed, see section 6.
-2. **`PlayerKey()` is wrong.** It returned `UI_UserInputText_1_720_0`. That is a localization token, not the character name. All characters probably share one key. Needs a stable per-character key. Options to check: the real player name from the save or the player actor; the save-game name or ID. **Not verified.**
+2. ~~`PlayerKey()` is wrong.~~ **Fixed and tested (2026-11-17, logs 22:48-22:54: two characters, separate data, migration ran once).** The key is now the character GUID: `/Script/Altar.VAltarSaveIdentificationData`, property `CharacterId` (FGuid, +0x38), read by name on the game thread (`src/CharacterKey.cpp`). Found with a memory probe (2026-11-17, logs 22:35-22:44): one instance per session, it always holds the loaded character's GUID, two characters gave two GUIDs. Same GUID as in the save-file names `<slot> - <name> (<GUID>).sav`. Old entry `UI_UserInputText_1_720_0` is moved to the first character that switches. All-zero GUID = switch refused with a HUD message. A new game autosaves at once (user), so a character has its GUID from the start; an all-zero GUID is still refused, as a guard.
 3. **Meaning of "the engine said no".** `UnequipObject` returns it for items that did come off (log shows it with working switches). Check the return type and meaning in CommonLibOB64 before you rely on it. Maybe log the real equipped state after the switch instead.
    - Declared `bool` in `lib/commonlibob64/include/RE/A/Actor.h:259`. SLS ignores the return value.
    - Pattern in every log: only the items with own data (the helmet and the enchanted ring) return `ok`. All others return "no" but still come off. **Not verified** what the value means.
 4. **Wrong copy of an item.** If two copies of one item differ (own data), the plugin may pick the wrong one. **Not verified.**
+   - **Related bug fixed and tested (2026-11-17, log 22:53):** a new character showed no worn item at all. Cause: `ItemChange::count` is the change against the base container (countDelta), not the number carried; starting items have **no change entry at all**. Now: worn detection ignores the count; "still carried" and the ammo count use `Actor::GetItemCountInContainer` (returned 1 for starting clothes); equip works without a change entry (engine picks the copy). Tested: starting clothes, drop and pick up again, Sokkero unchanged.
 5. **Persistence design.** JSON beside the DLL is a stopgap. Think about a per-save solution.
 6. **Hook timing.** Confirmed: OBSE message 2 (`kDataLoaded`) arrives in OBSE64 0.2.2 and the hook installs. (The earlier worry is closed.)
 7. **SLS buttons do not show on the user's PC.** Cause unknown. Menus Revamped works there. It may matter for UI work (byte patterns in SLS are dated 2026-09-29).
@@ -141,7 +144,7 @@ The combat diagnostic was used for the fix in section 6 and then removed. Only t
 
 **Stage 2: names and storage.** Store 5 names in the JSON. Default names. Validation: trim, reject empty, cap about 20 characters. Add functions `GetName(i)` / `SetName(i, text)`.
 
-**Stage 3: UI (agreed, in order).** Reuse techniques from Menus Revamped.
+**Stage 3: UI (agreed, in order).** Reuse techniques from Menus Revamped. **Full plan: `UI-UX.md`** (supersedes the list below where they differ).
 
 1. Census dump of the inventory widget tree (dev tool).
 2. Menu detection (`BP_OnActivated` / `BP_OnDeactivated` on `WBP_OriginalMenu_Inventory_C`).
@@ -188,7 +191,6 @@ How Menus Revamped adds UI (from its source):
 - Why `IsInCombat` returned false in the fight (no longer used).
 - Allies fighting next to the player (combat block).
 - That the beeps play correctly.
-- The key for the saved data (`PlayerKey`).
 - The meaning of the "engine said no" return value.
 - Equipping the right copy when two copies of an item differ.
 - CommonLibOB64 version match with the one SLS used.

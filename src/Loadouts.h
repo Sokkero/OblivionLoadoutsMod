@@ -6,7 +6,7 @@
 //   1. read what is worn now and save it as A
 //   2. take every piece of gear off
 //   3. equip each saved piece of B that is still in the inventory (missing pieces are skipped)
-// Gear = armour (shields too), clothing (rings and amulets are clothing) and ammunition. Weapons are off by default.
+// Gear = every equipped item: armour (shields too), clothing (rings, amulets), ammunition, weapons, torches.
 //
 // Adapted from Simple Loadout System (Oblivion Remastered) by ApocryphaRealm, GPL-3.0-or-later. See NOTICE.md.
 // Everything that touches the inventory runs on the TES thread (testhread::Post).
@@ -20,7 +20,13 @@ namespace loadouts
 
 	void Init();   // data loaded: remember which plugin has which load index
 
-	// Ask for a switch (any thread). The work is posted to the TES thread. False - with the reason - when it cannot
+	// The active loadout for the UI (any thread): -1 while the character's data is not loaded yet.
+	int ActiveForUi();
+	// TES thread: load the data of this character (key from characterkey::Read) if it is not loaded, so that
+	// ActiveForUi() is right before the first switch of a session.
+	void Sync(const std::string& a_key);
+
+	// Ask for a switch (TES thread: it reads the player's combat state). The work is posted to the TES thread. False - with the reason - when it cannot
 	// happen now (in combat, a switch is running, the hook is not installed).
 	bool Request(int a_to, std::string& a_why);
 }

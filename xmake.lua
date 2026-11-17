@@ -26,7 +26,7 @@ target("GearLoadouts")
         description = "Gear Loadouts: switch between saved sets of worn gear without moving any item (Oblivion Remastered)"
     })
     add_packages("minhook", "nlohmann_json")
-    add_syslinks("user32")
+    add_syslinks("user32", "shell32", "ole32")
     on_load(function (target)
         target:add("defines", "GL_VERSION=\"" .. (target:version() or "0.0.0") .. "\"")
     end)

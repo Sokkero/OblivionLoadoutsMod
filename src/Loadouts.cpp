@@ -9,6 +9,7 @@
 
 #include "Loadouts.h"
 
+#include "CharacterKey.h"
 #include "Console.h"
 #include "GameThread.h"
 #include "TesThread.h"
@@ -33,6 +34,7 @@ namespace loadouts
 		std::array<std::vector<Saved>, kCount>        g_loadouts;
 		int                                           g_active = 0;
 		std::string                                   g_key;   // the character whose data is loaded
+		std::atomic<int>                              g_uiActive{ -1 };   // g_active for other threads; -1 = not known yet
 		json                                          g_root = json::object();
 		bool                                          g_rootRead = false;
 		std::unordered_map<std::string, std::uint8_t> g_indexByName;   // lower-case plugin name -> load index
@@ -72,14 +74,9 @@ namespace loadouts
 			return n && *n ? std::string(n) : (a_form ? std::format("0x{:08X}", a_form->GetFormID()) : std::string("?"));
 		}
 
-		// The player's name is the key of the saved data. 0x7 is the player's base NPC. NOT VERIFIED that its full name
-		// is the character's name in the remaster; the fallback is one shared key.
-		std::string PlayerKey()
-		{
-			auto*       base = RE::TESForm::LookupByID(0x00000007);
-			const char* n = base ? RE::TESFullName::GetFullName(base) : nullptr;
-			return n && *n ? std::string(n) : std::string("player");
-		}
+		// Up to v0.1.2 the key was the player NPC's full name, which in the remaster is this text token for EVERY
+		// character. Its data is moved to the first character that switches (MigrateLegacy).
+		constexpr const char* kLegacyKey = "UI_UserInputText_1_720_0";
 
 		// ---------------------------------------------------------------------------------------------------
 		// reading what is worn (adapted from the original: Loadouts.cpp, IsGear .. WornEntries)
@@ -133,6 +130,13 @@ namespace loadouts
 			return false;
 		}
 
+		// How many the player really carries: base container + changes. Tested 2026-11-17 (log 22:53): a new
+		// character's starting clothes have no change entry at all, and this still returns 1 for each.
+		std::int32_t Carried(RE::PlayerCharacter* a_player, RE::TESBoundObject* a_object)
+		{
+			return a_player && a_object ? a_player->GetItemCountInContainer(a_object) : 0;
+		}
+
 		struct WornEntry
 		{
 			RE::ItemChange*    item;
@@ -148,7 +152,10 @@ namespace loadouts
 				return out;
 			}
 			for (RE::ItemChange* item : *items) {
-				if (!item || !item->object || !item->extraData || item->count <= 0 || !IsGear(item->object)) {
+				// item->count is NOT the number carried: it is the change against the base container (Oblivion's
+				// countDelta). Starting items still from the base container have no entry or 0 (new character,
+				// 2026-11-17). So the count is not checked; the Worn flag decides.
+				if (!item || !item->object || !item->extraData || !IsGear(item->object)) {
 					continue;
 				}
 				for (RE::ExtraDataList* xl : *item->extraData) {
@@ -157,22 +164,23 @@ namespace loadouts
 						continue;
 					}
 					// ammunition is worn as a whole stack; everything else one piece per list (the original's rule)
-					const std::int32_t n = item->object->GetFormType() == RE::FormType::Ammo ? item->count : 1;
+					const std::int32_t n = item->object->GetFormType() == RE::FormType::Ammo ? Carried(a_player, item->object) : 1;
 					out.push_back({ item, xl, n });
 				}
 			}
 			return out;
 		}
 
-		// An item of the player's inventory by form ID, with at least one copy.
-		RE::ItemChange* FindCarried(RE::PlayerCharacter* a_player, std::uint32_t a_formID)
+		// The inventory change entry of a form (any count: see the comment in WornEntries), or nullptr when the form
+		// is only in the base container.
+		RE::ItemChange* FindEntry(RE::PlayerCharacter* a_player, std::uint32_t a_formID)
 		{
 			auto* items = Items(a_player);
 			if (!items) {
 				return nullptr;
 			}
 			for (RE::ItemChange* item : *items) {
-				if (item && item->object && item->object->GetFormID() == a_formID && item->count > 0) {
+				if (item && item->object && item->object->GetFormID() == a_formID) {
 					return item;
 				}
 			}
@@ -257,6 +265,15 @@ namespace loadouts
 				l.clear();
 			}
 			try {
+				// MigrateLegacy: the old shared entry goes to the first character that switches (saved with the switch)
+				if (g_root.contains("characters") && g_root["characters"].is_object()) {
+					json& chars = g_root["characters"];
+					if (!chars.contains(a_key) && chars.contains(kLegacyKey)) {
+						chars[a_key] = std::move(chars[kLegacyKey]);
+						chars.erase(kLegacyKey);
+						logger::info("the old shared loadouts ('{}') now belong to character {}", kLegacyKey, a_key);
+					}
+				}
 				if (!g_root.contains("characters") || !g_root["characters"].is_object() || !g_root["characters"].contains(a_key)) {
 					logger::info("no saved loadouts for '{}' yet - Default is active", a_key);
 					return;
@@ -337,7 +354,7 @@ namespace loadouts
 		// the switch (runs on the TES thread)
 		// ---------------------------------------------------------------------------------------------------
 
-		void Switch(int a_to)
+		void Switch(int a_to, const std::string& a_key)
 		{
 			struct Release
 			{
@@ -351,9 +368,9 @@ namespace loadouts
 			if (g_indexByName.empty()) {
 				Init();
 			}
-			const std::string key = PlayerKey();
-			if (key != g_key) {
-				LoadCharacter(key);
+			if (a_key != g_key) {
+				LoadCharacter(a_key);   // another character was loaded since the last switch (or the first switch)
+				g_uiActive = g_active;
 			}
 			if (a_to == g_active) {
 				logger::info("switch: {} is already active", Name(a_to));
@@ -396,24 +413,30 @@ namespace loadouts
 			int equipped = 0;
 			int missing = 0;
 			for (const auto& s : wanted) {
-				RE::ItemChange* item = FindCarried(player, s.formID);
-				if (!item) {
+				RE::TESForm* form = RE::TESForm::LookupByID(s.formID);
+				auto*        object = form && IsGear(static_cast<RE::TESBoundObject*>(form)) ? static_cast<RE::TESBoundObject*>(form) : nullptr;
+				const auto   carried = Carried(player, object);
+				if (!object || carried <= 0) {
 					++missing;
 					logger::info("equip: 0x{:08X} is not in the inventory - skipped", s.formID);
 					continue;
 				}
-				RE::ExtraDataList*  xl = UnwornList(item, s.ownData);
-				const std::int32_t  count = item->object->GetFormType() == RE::FormType::Ammo ? item->count : 1;
-				const std::string   name = NameOf(item->object);
+				// the change entry may not exist (an item still only in the base container): then the engine picks a copy
+				RE::ItemChange*    item = FindEntry(player, s.formID);
+				RE::ExtraDataList* xl = item ? UnwornList(item, s.ownData) : nullptr;
+				const std::int32_t count = object->GetFormType() == RE::FormType::Ammo ? carried : 1;
+				const std::string  name = NameOf(object);
 				// The last argument is the console's NoUnequip lock. true made every restored piece impossible to take
 				// off again in the original mod, so it stays false.
-				player->EquipObject(item->object, count, xl, false, false);
+				player->EquipObject(object, count, xl, false, false);
 				++equipped;
-				logger::info("equip: {} x{}{}", name, count, xl ? " (own data)" : "");
+				logger::info("equip: {} x{}{} (carried {}, change {})", name, count, xl ? " (own data)" : "", carried,
+					item ? std::to_string(item->count) : std::string("no entry"));
 			}
 
 			// 4. done
 			g_active = a_to;
+			g_uiActive = a_to;
 			SaveCharacter();
 			logger::info("switch {} -> {}: {} kept, {} taken off, {} equipped, {} missing", Name(from), Name(a_to), kept, takeOff.size(),
 				equipped, missing);
@@ -448,6 +471,25 @@ namespace loadouts
 			files += std::format("{}{} (0x{:02X})", files.empty() ? "" : ", ", name, f->GetCompileIndex());
 		}
 		logger::info("plugins loaded by the game: {}", files);
+	}
+
+	int ActiveForUi()
+	{
+		return g_uiActive.load();
+	}
+
+	void Sync(const std::string& a_key)
+	{
+		if (a_key.empty()) {
+			return;
+		}
+		if (g_indexByName.empty()) {
+			Init();
+		}
+		if (a_key != g_key) {
+			LoadCharacter(a_key);
+		}
+		g_uiActive = g_active;
 	}
 
 	bool Request(int a_to, std::string& a_why)
@@ -493,11 +535,26 @@ namespace loadouts
 			a_why = "the TES thread hook is not installed";
 			return false;
 		}
+		if (!gamethread::Installed()) {
+			a_why = "the game thread hook is not installed (no character key)";
+			return false;
+		}
 		if (g_busy.exchange(true)) {
 			a_why = "a switch is already running";
 			return false;
 		}
-		testhread::Post([a_to] { Switch(a_to); });   // the engine's equipment path runs on the TES thread only
+		// The character key is an Unreal object (game thread); the switch runs on the TES thread.
+		gamethread::Post([a_to] {
+			std::string key = characterkey::Read();
+			if (key.empty()) {
+				g_busy = false;
+				logger::info("switch to {} refused: the character is not identified (no character ID yet)", Name(a_to));
+				console::Notify("Loadouts are not available yet. Save the game once, then try again.");
+				MessageBeep(MB_ICONHAND);
+				return;
+			}
+			testhread::Post([a_to, key = std::move(key)] { Switch(a_to, key); });   // the equipment path: TES thread only
+		});
 		return true;
 	}
 }

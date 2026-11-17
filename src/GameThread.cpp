@@ -20,6 +20,7 @@ namespace gamethread
 		void*             g_target = nullptr;
 		std::atomic<bool> g_firstRun{ true };
 		std::atomic<bool> g_pending{ false };   // cheap check: Tick runs every frame
+		std::atomic<FrameCallback> g_frame{ nullptr };
 
 		std::mutex       g_taskLock;
 		std::deque<Task> g_tasks;
@@ -45,6 +46,9 @@ namespace gamethread
 		{
 			if (g_firstRun.exchange(false)) {
 				logger::info("game thread: UEngine::Tick runs on thread {} - Unreal calls run here", GetCurrentThreadId());
+			}
+			if (auto cb = g_frame.load(std::memory_order_acquire)) {
+				cb();
 			}
 			if (g_pending.load(std::memory_order_acquire)) {
 				RunTasks();
@@ -105,5 +109,10 @@ namespace gamethread
 		}
 		g_pending.store(true, std::memory_order_release);
 		logger::info("game thread: task posted ({} waiting)", queued);
+	}
+
+	void SetFrameCallback(FrameCallback a_callback)
+	{
+		g_frame.store(a_callback, std::memory_order_release);
 	}
 }

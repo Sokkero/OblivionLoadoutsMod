@@ -9,6 +9,9 @@
 #include "GameThread.h"
 #include "Loadouts.h"
 #include "TesThread.h"
+#include "devtools/Census.h"
+#include "ui/InventoryMenu.h"
+#include "ui/LoadoutBar.h"
 
 namespace
 {
@@ -39,6 +42,20 @@ namespace
 			}
 			wasDown[i] = down;
 		}
+		// DEV TOOL: Ctrl+Shift+F11 = widget census (UI-UX.md step 2). Remove before a public release.
+		static bool censusWasDown = false;
+		const bool  censusDown = ctrl && (GetAsyncKeyState(VK_SHIFT) & 0x8000) != 0 && (GetAsyncKeyState(VK_F11) & 0x8000) != 0;
+		if (censusDown && !censusWasDown) {
+			census::Request();
+		}
+		censusWasDown = censusDown;
+	}
+
+	// Runs every frame on the Unreal game thread (GameThread.cpp).
+	void OnFrame()
+	{
+		inventorymenu::Tick();
+		loadoutbar::Tick();
 	}
 
 	void OnMessage(OBSE::MessagingInterface::Message* a_msg)
@@ -47,6 +64,10 @@ namespace
 			return;
 		}
 		logger::info("OBSE message {} from '{}'", a_msg->type, a_msg->sender ? a_msg->sender : "?");
+		// the inventory UI runs from the game thread's frame callback
+		inventorymenu::SetListener(&loadoutbar::OnInventory);
+		inventorymenu::SetPreparer(&loadoutbar::Prepare);
+		gamethread::SetFrameCallback(&OnFrame);
 		// the Unreal game thread (HUD messages through the console): try at each message until the engine object exists
 		if (!gamethread::Installed() && !gamethread::Install() && a_msg->type == OBSE::MessagingInterface::kDataLoaded) {
 			logger::error("the game thread hook could not be installed - no HUD messages");

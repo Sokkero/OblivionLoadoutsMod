@@ -16,5 +16,8 @@ namespace gamethread
 	bool Installed();
 
 	using Task = std::function<void()>;
-	void Post(Task a_task);   // runs on the next read, on the game thread
+	void Post(Task a_task);   // runs at the next frame, on the game thread
+
+	using FrameCallback = void (*)();
+	void SetFrameCallback(FrameCallback a_callback);   // runs every frame on the game thread, before the tasks
 }
