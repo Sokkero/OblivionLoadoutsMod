@@ -8,10 +8,12 @@
 
 #include "GameThread.h"
 #include "Loadouts.h"
+#include "Push.h"
 #include "TesThread.h"
 #include "devtools/Census.h"
 #include "ui/InventoryMenu.h"
 #include "ui/LoadoutBar.h"
+#include "ui/WindowInput.h"
 
 namespace
 {
@@ -30,7 +32,8 @@ namespace
 	void OnTick()
 	{
 		static bool wasDown[loadouts::kCount]{};
-		const bool  ctrl = GameWindowHasFocus() && (GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0;
+		// no hotkey while the rename popup takes the keyboard (Ctrl+Numpad would switch under it)
+		const bool  ctrl = GameWindowHasFocus() && !windowinput::PopupOpen() && (GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0;
 		for (int i = 0; i < loadouts::kCount; ++i) {
 			const bool down = ctrl && (GetAsyncKeyState(VK_NUMPAD0 + i) & 0x8000) != 0;
 			if (down && !wasDown[i]) {
@@ -75,6 +78,7 @@ namespace
 		if (a_msg->type == OBSE::MessagingInterface::kDataLoaded) {
 			loadouts::Init();
 			testhread::SetTick(&OnTick);
+			push::Install();   // the game's inventory list rebuild, run after a switch (Push.h)
 			if (!testhread::Install()) {
 				logger::error("the TES thread hook could not be installed - no hotkey, no switch");
 			}

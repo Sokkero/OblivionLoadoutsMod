@@ -79,6 +79,9 @@ The DLL lands in `build\windows\x64\releasedbg\GearLoadouts.dll`. The build work
 | `src/Reflect.h/.cpp` | From SLS. Read Unreal properties by name; self-check; `IsLive`; `Instances`. Game thread only. |
 | `src/CharacterKey.h/.cpp` | New. Reads the loaded character GUID (`VAltarSaveIdentificationData.CharacterId`). Game thread only. |
 | `src/Console.h/.cpp` | From SLS. Runs console commands via `KismetSystemLibrary::ExecuteConsoleCommand`. `Notify(text)` runs `Message "text"`. Unreal game thread only. |
+| `src/Push.h/.cpp` | From SLS. The game's inventory list rebuild (byte pattern), run after every switch so the equipped marks move. Tested 2026-11-18. |
+| `src/ui/*` | The inventory UI (5 buttons, rename popup): see `UI-UX.md` (plan, status per step, findings). `WindowInput` subclasses the game window and, while the popup is open, also blocks raw keyboard input and the key-state imports of every module (other mods' key binds, e.g. CloseMenusMod via UE4SS). |
+| `src/devtools/Census.*` | Dev tool: widget tree dump on Ctrl+Shift+F11. Remove the hotkey before a release. |
 | `src/Logger.h`, `src/Scan.h`, `src/pch.h` | Copied from SLS, unchanged. |
 | `xmake.lua` | `GearLoadouts` 0.1.2 (do not change, see section 12), GPL-3.0-or-later, C++23, packages `minhook`, `nlohmann_json`, rule `commonlibob64.plugin`, links `user32`. `author = "CHANGE ME"`. |
 | `NOTICE.md`, `LICENSE`, `EXCEPTIONS`, `THIRD_PARTY_NOTICES.md` | Licence files. Put the real name in `NOTICE.md` and `xmake.lua`. |

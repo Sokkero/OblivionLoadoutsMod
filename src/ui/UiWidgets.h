@@ -3,7 +3,8 @@
 // Gear Loadouts - building and reading UMG widgets through reflection.
 //
 // Adapted from Menus Revamped (Oblivion Remastered) by cfa911, GPL-3.0-or-later (see NOTICE.md): engine/UiTree.cpp
-// (FindInTree, ShownOnScreen), engine/UiWidgets.cpp (AddToCanvas, Measure, ViewportScale), engine/UiText.cpp (SetText, Ink).
+// (FindInTree, ShownOnScreen), engine/UiWidgets.cpp (AddToCanvas, Measure, ViewportScale), engine/UiText.cpp (SetText, Ink, the font setter), engine/UiCall.cpp (Load),
+// engine/UiWidgets.cpp RoundedBox (here RoundedBorder, for a Border).
 // Modified 2026-11-17: cut down to what the loadout bar needs; Prop / Slots / Content helpers added.
 //
 // Game thread only (GameThread.h).
@@ -38,4 +39,12 @@ namespace ui
 
 	bool SetText(UE::UObject* a_textWidget, const std::string& a_utf8);
 	void Ink(UE::UObject* a_textWidget, const float a_rgba[4]);   // text colour (linear RGBA), no shadow
+	bool SetFontSize(UE::UObject* a_textWidget, float a_size);   // its own Font with another Size, through SetFont
+
+	// an asset by object path ("/Game/X/Y.Y"): the loaded one, else loaded now (KismetSystemLibrary, Menus Revamped)
+	UE::UObject* Load(const wchar_t* a_path);
+	// the text widget's font: another font asset (and typeface; nullptr keeps the face) at a size, through SetFont
+	bool SetFont(UE::UObject* a_textWidget, const wchar_t* a_fontAsset, const wchar_t* a_typeface, float a_size);
+	// a Border's background as a rounded box with a fill and an outline (linear RGBA), through SetBrush
+	bool RoundedBorder(UE::UObject* a_border, const float a_fill[4], const float a_outline[4], float a_width, float a_radius);
 }

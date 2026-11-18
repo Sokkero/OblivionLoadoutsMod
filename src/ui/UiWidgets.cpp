@@ -275,4 +275,135 @@ namespace ui
 		c.Set("WorldContextObject", pc);
 		return c.RunGuarded() ? c.Get<float>("ReturnValue") : 1.0f;
 	}
+
+	bool SetFontSize(UE::UObject* a_textWidget, float a_size)
+	{
+		// copy the widget's FSlateFontInfo, change Size, hand it to SetFont (as Menus Revamped's ApplyFont does)
+		static auto* fontInfo = UE::StaticFindObject<UE::UStruct>(nullptr, nullptr, L"/Script/SlateCore.SlateFontInfo");
+		if (!a_textWidget || !fontInfo) {
+			return false;
+		}
+		auto*      cls = a_textWidget->GetClass();
+		const auto fontOff = reflect::Offset(cls, "Font");
+		const auto fontSize = reflect::Size(cls, "Font");
+		const auto sizeOff = reflect::Offset(fontInfo, "Size");
+		if (fontOff < 0 || fontSize <= 0 || sizeOff < 0 || reflect::Size(fontInfo, "Size") != 4 || sizeOff + 4 > fontSize) {
+			return false;
+		}
+		Call set(a_textWidget, L"SetFont");
+		void* at = set ? set.At("InFontInfo") : nullptr;
+		if (!at || set.Size("InFontInfo") != fontSize) {
+			return false;
+		}
+		std::memcpy(at, reflect::At<std::uint8_t>(a_textWidget, fontOff), static_cast<std::size_t>(fontSize));
+		std::memcpy(static_cast<std::uint8_t*>(at) + sizeOff, &a_size, sizeof(a_size));
+		return set.Run();
+	}
+
+	UE::UObject* Load(const wchar_t* a_path)
+	{
+		if (!a_path) {
+			return nullptr;
+		}
+		if (auto* o = UE::StaticFindObject<UE::UObject>(nullptr, nullptr, a_path)) {
+			return o;
+		}
+		// not loaded yet: MakeSoftObjectPath -> Conv_SoftObjPathToSoftObjRef -> LoadAsset_Blocking (Menus Revamped)
+		static auto* lib = Class(L"/Script/Engine.KismetSystemLibrary");
+		auto*        cdo = lib ? lib->GetDefaultObject(false) : nullptr;
+		if (!cdo) {
+			return nullptr;
+		}
+		Call       mk(cdo, L"MakeSoftObjectPath");
+		Call       conv(cdo, L"Conv_SoftObjPathToSoftObjRef");
+		Call       load(cdo, L"LoadAsset_Blocking");
+		void*      path = mk.At("PathString");
+		const auto pathSize = mk.Size("ReturnValue");
+		const auto refSize = conv.Size("ReturnValue");
+		if (!mk || !conv || !load || !path || pathSize <= 0 || refSize <= 0 || conv.Size("SoftObjectPath") != pathSize || load.Size("Asset") != refSize) {
+			return nullptr;
+		}
+		new (path) UE::FString(a_path);   // never destroyed: a small one-time leak per asset (as in Menus Revamped)
+		mk.Run();
+		std::memcpy(conv.At("SoftObjectPath"), mk.At("ReturnValue"), static_cast<std::size_t>(pathSize));
+		conv.Run();
+		std::memcpy(load.At("Asset"), conv.At("ReturnValue"), static_cast<std::size_t>(refSize));
+		load.Run();
+		return load.Get<UE::UObject*>("ReturnValue");
+	}
+
+	bool SetFont(UE::UObject* a_textWidget, const wchar_t* a_fontAsset, const wchar_t* a_typeface, float a_size)
+	{
+		// a copy of the widget's FSlateFontInfo with another font object (and face) and size, handed to SetFont; the live
+		// property is not changed first (Menus Revamped: the setter may then see no change)
+		static auto* info = UE::StaticFindObject<UE::UStruct>(nullptr, nullptr, L"/Script/SlateCore.SlateFontInfo");
+		auto*        font = Load(a_fontAsset);
+		if (!a_textWidget || !info || !font) {
+			return false;
+		}
+		auto*      cls = a_textWidget->GetClass();
+		const auto fontOff = reflect::Offset(cls, "Font");
+		const auto fontSize = reflect::Size(cls, "Font");
+		const auto objOff = reflect::Offset(info, "FontObject");
+		const auto faceOff = reflect::Offset(info, "TypefaceFontName");
+		const auto sizeOff = reflect::Offset(info, "Size");
+		if (fontOff < 0 || fontSize <= 0 || fontSize > 512 || objOff < 0 || faceOff < 0 || sizeOff < 0 || reflect::Size(info, "Size") != 4 ||
+			objOff + 8 > fontSize || faceOff + 8 > fontSize || sizeOff + 4 > fontSize) {
+			return false;
+		}
+		const auto*               current = reflect::At<std::uint8_t>(a_textWidget, fontOff);
+		std::vector<std::uint8_t> copy(current, current + fontSize);
+		std::memcpy(copy.data() + objOff, &font, sizeof(font));
+		if (a_typeface) {
+			const UE::FName face(a_typeface);
+			std::memcpy(copy.data() + faceOff, &face, sizeof(face));
+		}
+		std::memcpy(copy.data() + sizeOff, &a_size, sizeof(a_size));
+		return CallFirst(a_textWidget, L"SetFont", copy.data(), copy.size());
+	}
+
+	bool RoundedBorder(UE::UObject* a_border, const float a_fill[4], const float a_outline[4], float a_width, float a_radius)
+	{
+		// Menus Revamped's RoundedBox (engine/UiWidgets.cpp), for a Border's Background brush instead of an Image's Brush
+		static auto* brushStruct = UE::StaticFindObject<UE::UStruct>(nullptr, nullptr, L"/Script/SlateCore.SlateBrush");
+		static auto* outlineStruct = UE::StaticFindObject<UE::UStruct>(nullptr, nullptr, L"/Script/SlateCore.SlateBrushOutlineSettings");
+		static auto* colorStruct = UE::StaticFindObject<UE::UStruct>(nullptr, nullptr, L"/Script/SlateCore.SlateColor");
+		if (!a_border || !brushStruct || !outlineStruct || !colorStruct || !a_border->GetClass()) {
+			return false;
+		}
+		const auto brushOff = reflect::Offset(a_border->GetClass(), "Background");
+		const auto brushSize = reflect::Size(a_border->GetClass(), "Background");
+		const auto drawAs = reflect::Offset(brushStruct, "DrawAs");
+		const auto tint = reflect::Offset(brushStruct, "TintColor");
+		const auto outline = reflect::Offset(brushStruct, "OutlineSettings");
+		const auto radii = reflect::Offset(outlineStruct, "CornerRadii");
+		const auto radiiSize = reflect::Size(outlineStruct, "CornerRadii");
+		const auto oColor = reflect::Offset(outlineStruct, "Color");
+		const auto rounding = reflect::Offset(outlineStruct, "RoundingType");
+		const auto width = reflect::Offset(outlineStruct, "Width");
+		const auto spec = reflect::Offset(colorStruct, "SpecifiedColor");
+		const auto rule = reflect::Offset(colorStruct, "ColorUseRule");
+		if (brushOff < 0 || brushSize <= 0 || brushSize > 1024 || drawAs < 0 || tint < 0 || outline < 0 || radii < 0 || oColor < 0 ||
+			rounding < 0 || width < 0 || spec < 0 || rule < 0) {
+			return false;
+		}
+		// built in a copy: the live brush is only changed through SetBrush
+		const auto*               live = reflect::At<std::uint8_t>(a_border, brushOff);
+		std::vector<std::uint8_t> b(live, live + brushSize);
+		b[static_cast<std::size_t>(drawAs)] = 4;   // ESlateBrushDrawType::RoundedBox
+		std::memcpy(b.data() + tint + spec, a_fill, sizeof(float) * 4);
+		b[static_cast<std::size_t>(tint + rule)] = 0;   // ESlateColorStylingMode::UseColor_Specified
+		std::memcpy(b.data() + outline + oColor + spec, a_outline, sizeof(float) * 4);
+		b[static_cast<std::size_t>(outline + oColor + rule)] = 0;
+		if (radiiSize == 32) {
+			const double v[4] = { a_radius, a_radius, a_radius, a_radius };
+			std::memcpy(b.data() + outline + radii, v, sizeof(v));
+		} else if (radiiSize == 16) {
+			const float v[4] = { a_radius, a_radius, a_radius, a_radius };
+			std::memcpy(b.data() + outline + radii, v, sizeof(v));
+		}
+		b[static_cast<std::size_t>(outline + rounding)] = 0;   // ESlateBrushRoundingType::FixedRadius
+		std::memcpy(b.data() + outline + width, &a_width, sizeof(a_width));
+		return CallFirst(a_border, L"SetBrush", b.data(), b.size());
+	}
 }

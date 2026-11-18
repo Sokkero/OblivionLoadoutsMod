@@ -16,7 +16,18 @@ namespace loadouts
 {
 	inline constexpr int kCount = 5;   // 0 = Default, 1..4 = Loadout 1..4
 
-	const char* Name(int a_loadout);
+	inline constexpr int kMaxNameLength = 15;   // characters (Unicode code points); was 20 until 2026-11-18 (user)
+
+	const char* Name(int a_loadout);   // the default name ("Default", "Loadout 1".."Loadout 4"); used in logs
+
+	// Names (UI-UX.md step 7). Validation: no control characters, whitespace trimmed, not empty, at most
+	// kMaxNameLength characters. a_out gets the trimmed name.
+	// a_truncate: a longer name is cut to kMaxNameLength instead of rejected (names saved under the old limit of 20)
+	bool          CleanName(const std::string& a_utf8, std::string& a_out, bool a_truncate = false);
+	std::string   DisplayName(int a_loadout);   // any thread: the loaded character's name for the loadout
+	std::uint32_t NamesVersion();               // changes whenever a name changes (the UI repaints its labels)
+	// any thread: validates, shows at once, saves on the TES thread. False when the name is not valid.
+	bool SetName(const std::string& a_key, int a_loadout, const std::string& a_name);
 
 	void Init();   // data loaded: remember which plugin has which load index
 

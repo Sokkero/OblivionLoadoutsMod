@@ -37,7 +37,8 @@ Source paths below:
 - Validation:
   - Leading and trailing whitespace is trimmed.
   - Empty after trimming = invalid. Save is shown greyed out and does nothing.
-  - Cap: **20 characters**. Extra characters are not accepted.
+  - Cap: **15 characters** (user, 2026-11-18; was 20). Extra characters are not accepted. Names saved under the old cap
+    are shortened to 15 when loaded.
   - **Any printable character is allowed** (user, 2026-11-17), not only ASCII. Control characters are rejected.
     One character = one Unicode code point (a surrogate pair counts as one).
     **Not verified:** that the game font draws every character. Missing glyphs may show as boxes.
@@ -165,7 +166,7 @@ Fallback if polling is not reliable: the ProcessEvent watch (MR's pattern), with
 - Popup mode: section 1.2. Swallow all `WM_KEYDOWN`, `WM_KEYUP`, `WM_CHAR`, `WM_SYSKEYDOWN` (except Alt+Tab / Alt+F4,
   let Windows handle those). Swallow all mouse buttons; act on our rects only.
 - Text filter: any printable character (Unicode, `WM_CHAR` is UTF-16; join surrogate pairs), no control characters,
-  max 20 code points. Stored as UTF-8 in the JSON. Shown through FText (not through the console, so the ASCII limit of
+  max 15 code points. Stored as UTF-8 in the JSON. Shown through FText (not through the console, so the ASCII limit of
   `console::Notify` does not apply). IME input: MR handles it (`MR: SearchInput.cpp:196-222`); copy that part.
 - Rects: measured on the game thread every 100 ms while the menu is open (`MR: ui::Measure`, `GetViewportScale`),
   stored under the mutex. Rects are in client pixels, so window size, fullscreen and UI scale are handled by the
@@ -211,12 +212,12 @@ Each step: build → user test → log check → next step. No step starts befor
 | 2 | **Done 2026-11-17** (`GearLoadouts-census-*.txt`). Census dump on a dev hotkey (**Ctrl+Shift+F11**; MR uses F12) | Open inventory, press the key, send the dump file | `census: written <file>` |
 | 3 | **Done 2026-11-17** (polling in menu mode, 50 ms; the game makes a new inventory widget on most opens). Menu detection | Open / close inventory several times, also the first open after start | `ui: inventory opened (instance …)`, `ui: inventory closed` |
 | 4 | **Done 2026-11-17** (row built before the menu fades in: no delay, no table jump; tested across tab and menu switches). One static test button (no input) at a fixed place | Button shows; stays after tab change / reopen; no crash on close, on quit to main menu, on load | `ui: bar built`, `ui: bar removed` |
-| 5 | WndProc + hit test, left click on the test button only logs | Click logs once; clicks elsewhere still work; MR search bar still works | `ui: click on button 0 (left)` |
-| 6 | 5 buttons with **hardcoded names** ("Default", "Loadout 1".."Loadout 4"), highlight, hover, left click = switch, highlight follows hotkeys, combat refusal | All switch tests; combat message; active click does nothing | `ui: switch requested i`, existing switch lines |
-| 7 | Names storage (was step 0): 5 names per character in the JSON, `GetName` / `SetName` with validation; labels from the JSON | Edit names in the JSON by hand, reopen menu | `ui: labels …` |
-| 8 | Right click opens the popup with fixed text; Cancel / Esc / click outside close it; Esc does not close the inventory | As stated | `ui: rename popup open i`, `… closed (cancel)` |
-| 9 | Typing in the field; all game keys swallowed while open | Type "I", Tab, Esc, letters, Backspace, 25 characters | `ui: typed length n` (no text in the log) |
-| 10 | Save writes the name; empty / whitespace rejected; Enter = Save | Rename, reopen menu, restart game | `ui: renamed i` |
+| 5 | **Done 2026-11-17** (window thread = game thread). WndProc + hit test, left click on the test button only logs | Click logs once; clicks elsewhere still work; MR search bar still works | `ui: click on button 0 (left)` |
+| 6 | **Done 2026-11-17.** 5 buttons with **hardcoded names** ("Default", "Loadout 1".."Loadout 4"), highlight, hover, left click = switch, highlight follows hotkeys, combat refusal | All switch tests; combat message; active click does nothing | `ui: switch requested i`, existing switch lines |
+| 7 | **Built 2026-11-17, tested 2026-11-18** (rename, save, cancel, Esc, 20-character cap; open: restart persistence, other character, non-ASCII). Names storage (was step 0): 5 names per character in the JSON, `GetName` / `SetName` with validation; labels from the JSON | Edit names in the JSON by hand, reopen menu | `ui: labels …` |
+| 8 | **Built 2026-11-17, tested 2026-11-18** (rename, save, cancel, Esc, 20-character cap; open: restart persistence, other character, non-ASCII). Right click opens the popup with fixed text; Cancel / Esc / click outside close it; Esc does not close the inventory | As stated | `ui: rename popup open i`, `… closed (cancel)` |
+| 9 | **Built 2026-11-17, tested 2026-11-18** (rename, save, cancel, Esc, 20-character cap; open: restart persistence, other character, non-ASCII). Typing in the field; all game keys swallowed while open | Type "I", Tab, Esc, letters, Backspace, 25 characters | `ui: typed length n` (no text in the log) |
+| 10 | **Built 2026-11-17, tested 2026-11-18** (rename, save, cancel, Esc, 20-character cap; open: restart persistence, other character, non-ASCII). Save writes the name; empty / whitespace rejected; Enter = Save | Rename, reopen menu, restart game | `ui: renamed i` |
 | 11 | Polish: theme colours, final position (no sounds, no hint text: user decision) | Test matrix (section 5) | — |
 
 Remove the census hotkey and extra logs before a public release.
@@ -233,6 +234,16 @@ Remove the census hotkey and extra logs before a public release.
 - In combat: click a button.
 
 ---
+
+### 5.1 Findings from the tests (2026-11-18)
+- **Other mods' key binds:** CloseMenusMod (a UE4SS Lua script, `ue4ss/Mods/CloseMenusMod`) closes the inventory on I and
+  switches to the map on M through UE4SS `RegisterKeyBind`. UE4SS polls the key state itself, so swallowing window
+  messages was not enough. Fix: while the popup is open, the `GetAsyncKeyState` / `GetKeyState` imports of every loaded
+  module (except ours and Windows') answer "up" for keyboard keys (`src/ui/WindowInput.cpp`, `PatchAllModules`). Raw
+  keyboard input (`WM_INPUT`) is swallowed too (the game imports it; not used for these keys in the test).
+- A global ProcessEvent hook that dropped input-action events was tried and removed: it only ever dropped mouse look.
+- **Equipped marks** did not move after a switch: fixed with the game's own inventory list rebuild (`src/Push.cpp`,
+  from SLS), called after every switch.
 
 ## 6. Risks
 | Risk | Effect | Mitigation |

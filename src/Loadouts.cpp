@@ -12,6 +12,7 @@
 #include "CharacterKey.h"
 #include "Console.h"
 #include "GameThread.h"
+#include "Push.h"
 #include "TesThread.h"
 
 #include <cctype>
@@ -35,6 +36,28 @@ namespace loadouts
 		int                                           g_active = 0;
 		std::string                                   g_key;   // the character whose data is loaded
 		std::atomic<int>                              g_uiActive{ -1 };   // g_active for other threads; -1 = not known yet
+		// the 5 names of the loaded character; read by the UI (game thread), written by LoadCharacter / SetName
+		std::mutex                                    g_namesLock;
+		std::array<std::string, kCount>               g_names;
+		std::atomic<std::uint32_t>                    g_namesVersion{ 0 };
+
+		std::array<std::string, kCount> DefaultNames()
+		{
+			std::array<std::string, kCount> out;
+			for (int i = 0; i < kCount; ++i) {
+				out[static_cast<std::size_t>(i)] = Name(i);
+			}
+			return out;
+		}
+
+		void PublishNames(const std::array<std::string, kCount>& a_names)
+		{
+			{
+				std::scoped_lock l(g_namesLock);
+				g_names = a_names;
+			}
+			++g_namesVersion;
+		}
 		json                                          g_root = json::object();
 		bool                                          g_rootRead = false;
 		std::unordered_map<std::string, std::uint8_t> g_indexByName;   // lower-case plugin name -> load index
@@ -264,6 +287,7 @@ namespace loadouts
 			for (auto& l : g_loadouts) {
 				l.clear();
 			}
+			PublishNames(DefaultNames());
 			try {
 				// MigrateLegacy: the old shared entry goes to the first character that switches (saved with the switch)
 				if (g_root.contains("characters") && g_root["characters"].is_object()) {
@@ -280,6 +304,18 @@ namespace loadouts
 				}
 				const json& c = g_root["characters"][a_key];
 				g_active = std::clamp(c.value("active", 0), 0, kCount - 1);
+				if (c.contains("names") && c["names"].is_array()) {
+					auto names = DefaultNames();
+					for (std::size_t i = 0; i < c["names"].size() && i < names.size(); ++i) {
+						std::string clean;
+						if (c["names"][i].is_string() && CleanName(c["names"][i].get<std::string>(), clean, true)) {
+							names[i] = clean;
+						} else {
+							logger::warn("saved name {} of '{}' is not valid - the default is used", i, a_key);
+						}
+					}
+					PublishNames(names);
+				}
 				if (c.contains("loadouts") && c["loadouts"].is_array()) {
 					const auto& arr = c["loadouts"];
 					for (std::size_t i = 0; i < arr.size() && i < static_cast<std::size_t>(kCount); ++i) {
@@ -327,7 +363,14 @@ namespace loadouts
 					all.push_back(std::move(one));
 				}
 				g_root["version"] = 1;
-				g_root["characters"][g_key] = json{ { "active", g_active }, { "loadouts", std::move(all) } };
+				json names = json::array();
+				{
+					std::scoped_lock l(g_namesLock);
+					for (const auto& n : g_names) {
+						names.push_back(n);
+					}
+				}
+				g_root["characters"][g_key] = json{ { "active", g_active }, { "names", std::move(names) }, { "loadouts", std::move(all) } };
 
 				const auto path = FilePath();
 				auto       tmp = path;
@@ -438,8 +481,10 @@ namespace loadouts
 			g_active = a_to;
 			g_uiActive = a_to;
 			SaveCharacter();
-			logger::info("switch {} -> {}: {} kept, {} taken off, {} equipped, {} missing", Name(from), Name(a_to), kept, takeOff.size(),
-				equipped, missing);
+			// the inventory menu's rows (equipped marks) follow the game's own list rebuild; nothing happens when closed
+			const bool rebuilt = push::Rebuild();
+			logger::info("switch {} -> {}: {} kept, {} taken off, {} equipped, {} missing{}", Name(from), Name(a_to), kept, takeOff.size(),
+				equipped, missing, rebuilt ? ", inventory list rebuild queued" : "");
 			MessageBeep(MB_OK);
 		}
 	}
@@ -471,6 +516,127 @@ namespace loadouts
 			files += std::format("{}{} (0x{:02X})", files.empty() ? "" : ", ", name, f->GetCompileIndex());
 		}
 		logger::info("plugins loaded by the game: {}", files);
+	}
+
+	bool CleanName(const std::string& a_utf8, std::string& a_out, bool a_truncate)
+	{
+		// UTF-8 -> code points (invalid bytes: the name is invalid)
+		std::u32string cps;
+		for (std::size_t i = 0; i < a_utf8.size();) {
+			const auto    c = static_cast<unsigned char>(a_utf8[i]);
+			char32_t      cp = 0;
+			std::size_t   n = 0;
+			if (c < 0x80) {
+				cp = c;
+				n = 1;
+			} else if ((c & 0xE0) == 0xC0) {
+				cp = c & 0x1F;
+				n = 2;
+			} else if ((c & 0xF0) == 0xE0) {
+				cp = c & 0x0F;
+				n = 3;
+			} else if ((c & 0xF8) == 0xF0) {
+				cp = c & 0x07;
+				n = 4;
+			} else {
+				return false;
+			}
+			if (i + n > a_utf8.size()) {
+				return false;
+			}
+			for (std::size_t k = 1; k < n; ++k) {
+				const auto cc = static_cast<unsigned char>(a_utf8[i + k]);
+				if ((cc & 0xC0) != 0x80) {
+					return false;
+				}
+				cp = (cp << 6) | (cc & 0x3F);
+			}
+			i += n;
+			if (cp < 0x20 || (cp >= 0x7F && cp < 0xA0)) {
+				return false;   // control characters
+			}
+			cps.push_back(cp);
+		}
+		const auto blank = [](char32_t a) { return a == U' ' || a == 0xA0 || a == 0x3000 || (a >= 0x2000 && a <= 0x200B); };
+		while (!cps.empty() && blank(cps.front())) {
+			cps.erase(cps.begin());
+		}
+		while (!cps.empty() && blank(cps.back())) {
+			cps.pop_back();
+		}
+		if (a_truncate && cps.size() > static_cast<std::size_t>(kMaxNameLength)) {
+			cps.resize(static_cast<std::size_t>(kMaxNameLength));
+			while (!cps.empty() && blank(cps.back())) {
+				cps.pop_back();
+			}
+		}
+		if (cps.empty() || cps.size() > static_cast<std::size_t>(kMaxNameLength)) {
+			return false;
+		}
+		a_out.clear();
+		for (char32_t cp : cps) {
+			if (cp < 0x80) {
+				a_out += static_cast<char>(cp);
+			} else if (cp < 0x800) {
+				a_out += static_cast<char>(0xC0 | (cp >> 6));
+				a_out += static_cast<char>(0x80 | (cp & 0x3F));
+			} else if (cp < 0x10000) {
+				a_out += static_cast<char>(0xE0 | (cp >> 12));
+				a_out += static_cast<char>(0x80 | ((cp >> 6) & 0x3F));
+				a_out += static_cast<char>(0x80 | (cp & 0x3F));
+			} else {
+				a_out += static_cast<char>(0xF0 | (cp >> 18));
+				a_out += static_cast<char>(0x80 | ((cp >> 12) & 0x3F));
+				a_out += static_cast<char>(0x80 | ((cp >> 6) & 0x3F));
+				a_out += static_cast<char>(0x80 | (cp & 0x3F));
+			}
+		}
+		return true;
+	}
+
+	std::string DisplayName(int a_loadout)
+	{
+		if (a_loadout < 0 || a_loadout >= kCount) {
+			return "?";
+		}
+		std::scoped_lock l(g_namesLock);
+		const auto& n = g_names[static_cast<std::size_t>(a_loadout)];
+		return n.empty() ? std::string(Name(a_loadout)) : n;
+	}
+
+	std::uint32_t NamesVersion()
+	{
+		return g_namesVersion.load();
+	}
+
+	bool SetName(const std::string& a_key, int a_loadout, const std::string& a_name)
+	{
+		std::string clean;
+		if (a_key.empty() || a_loadout < 0 || a_loadout >= kCount || !CleanName(a_name, clean)) {
+			return false;
+		}
+		{
+			std::scoped_lock l(g_namesLock);
+			g_names[static_cast<std::size_t>(a_loadout)] = clean;   // shown at once
+		}
+		++g_namesVersion;
+		testhread::Post([a_key, a_loadout, clean] {   // the JSON belongs to the TES thread
+			if (g_indexByName.empty()) {
+				Init();
+			}
+			if (a_key != g_key) {
+				LoadCharacter(a_key);
+				g_uiActive = g_active;
+			}
+			{
+				std::scoped_lock l(g_namesLock);
+				g_names[static_cast<std::size_t>(a_loadout)] = clean;
+			}
+			++g_namesVersion;
+			SaveCharacter();
+			logger::info("loadout {} of '{}' renamed to \"{}\"", a_loadout, a_key, clean);
+		});
+		return true;
 	}
 
 	int ActiveForUi()
