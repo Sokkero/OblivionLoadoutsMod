@@ -2,7 +2,7 @@
 
 // The loadout logic. Nothing is ever moved: a loadout is a saved list of the forms that were worn when the player
 // switched away from it. Switching A -> B:
-//   1. save what is worn now as A
+//   1. save what is worn now as A (unless no loadout is active: then it is saved nowhere)
 //   2. take off every piece B does not hold (shared pieces stay on)
 //   3. equip each piece of B that is still in the inventory
 // Everything touching the inventory runs on the TES thread.
@@ -14,6 +14,7 @@
 namespace loadouts
 {
 	inline constexpr int kCount = 5;           // 0 = Default, 1..4 = Loadout 1..4
+	inline constexpr int kNone = -1;           // no loadout active: the save has no token; the next switch saves nothing
 	inline constexpr int kMaxNameLength = 15;  // Unicode code points
 
 	// HUD message when the character has no GUID yet
@@ -29,7 +30,7 @@ namespace loadouts
 	bool          SetName(const std::string& a_key, int a_loadout, const std::string& a_name);   // any thread
 
 	void Init();                          // data loaded: map plugin names to load indices
-	int  ActiveForUi();                   // any thread; -1 until the character's data is loaded
+	int  ActiveForUi();                   // any thread; kNone until loaded, or when the save has no active loadout
 	void Sync(const std::string& a_key);  // TES thread: load this character's data if not loaded yet
 
 	// TES thread. False (with the reason) when the switch cannot happen now; otherwise it is queued.

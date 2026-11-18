@@ -39,6 +39,7 @@ When switching from loadout A to B:
 [b]Note:[/b] Switching to a loadout for the first time takes everything off, since that loadout is still empty. Just put your gear on and it gets saved the next time you switch away.
 
 The loadouts are stored in [b]GearLoadouts.json[/b] next to the DLL, not in your save file. Loading an older save keeps your newest loadouts.
+Which loadout is active is kept in each save (by a hidden item from [b]GearLoadouts.esp[/b]), so after loading an older save your gear still ends up in the right loadout.
 
 [size=4][b]Requirements[/b][/size]
 [list]
@@ -51,6 +52,7 @@ Tested with OBSE64 0.2.2 on game version 1.512.105.
 Install with your mod manager, or manually:
 [list=1]
 [*]Copy [b]GearLoadouts.dll[/b] into [b]Oblivion Remastered\OblivionRemastered\Binaries\Win64\OBSE\Plugins\[/b]
+[*]Copy [b]GearLoadouts.esp[/b] into [b]Oblivion Remastered\OblivionRemastered\Content\Dev\ObvData\Data\[/b] and add the line [b]GearLoadouts.esp[/b] to [b]Plugins.txt[/b] in that folder
 [*]Start the game through [b]obse64_loader.exe[/b]
 [/list]
 

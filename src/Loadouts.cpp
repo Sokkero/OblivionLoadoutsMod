@@ -6,6 +6,8 @@
 
 #include "CharacterKey.h"
 #include "Console.h"
+#include "Hook.h"
+#include "Scan.h"
 #include "GameThread.h"
 #include "Push.h"
 #include "TesThread.h"
@@ -13,6 +15,7 @@
 
 #include <cctype>
 #include <fstream>
+#include <optional>
 
 namespace loadouts
 {
@@ -28,7 +31,7 @@ namespace loadouts
 
 		// TES thread
 		std::array<std::vector<Saved>, kCount>        g_loadouts;
-		int                                           g_active = 0;
+		int                                           g_active = kNone;   // read from the loaded save's token
 		std::string                                   g_key;   // character whose data is loaded
 		json                                          g_root;
 		std::unordered_map<std::string, std::uint8_t> g_indexByName;   // lower-case plugin name -> load index
@@ -179,6 +182,282 @@ namespace loadouts
 			return nullptr;
 		}
 
+		// -------------------------------------------------------------------------------------------------------
+		// diagnostics: what a piece is, which body slots it takes, and whether the worn set is consistent
+		// -------------------------------------------------------------------------------------------------------
+
+		std::uint16_t SlotMask(RE::TESBoundObject* a_object)
+		{
+			switch (a_object ? a_object->GetFormType() : RE::FormType::None) {
+			case RE::FormType::Armor:
+				return static_cast<RE::TESObjectARMO*>(a_object)->bipedModelData.bipedObjectSlots;
+			case RE::FormType::Clothing:
+				return static_cast<RE::TESObjectCLOT*>(a_object)->bipedModelData.bipedObjectSlots;
+			default:
+				return 0;
+			}
+		}
+
+		std::string SlotNames(RE::TESBoundObject* a_object)
+		{
+			static constexpr const char* kSlots[16] = { "head", "hair", "upper body", "lower body", "hand", "foot", "right ring", "left ring",
+				"amulet", "weapon", "back weapon", "side weapon", "quiver", "shield", "torch", "tail" };
+			switch (a_object ? a_object->GetFormType() : RE::FormType::None) {
+			case RE::FormType::Weapon:
+				return "weapon";
+			case RE::FormType::Ammo:
+				return "ammo";
+			case RE::FormType::Light:
+				return "torch";
+			default:
+				break;
+			}
+			std::string out;
+			const std::uint16_t mask = SlotMask(a_object);
+			for (int i = 0; i < 16; ++i) {
+				if (mask & (1u << i)) {
+					out += out.empty() ? "" : ", ";
+					out += kSlots[i];
+				}
+			}
+			return out.empty() ? "no slot" : out;
+		}
+
+		std::string Describe(RE::TESBoundObject* a_object)
+		{
+			return a_object ? std::format("'{}' 0x{:08X} [{}]", NameOf(a_object), a_object->GetFormID(), SlotNames(a_object)) : std::string("(none)");
+		}
+
+		std::string Describe(const WornEntry& a_entry)
+		{
+			const bool left = a_entry.extra && a_entry.extra->GetExtraData(RE::EXTRA_DATA_TYPE::WornLeft);
+			return std::format("{}{}{}", Describe(a_entry.item->object), HasOwnData(a_entry.extra) ? " own-data" : "", left ? " left" : "");
+		}
+
+		bool IsWornNow(RE::PlayerCharacter* a_player, std::uint32_t a_formID)
+		{
+			RE::ItemChange* item = FindEntry(a_player, a_formID);
+			if (item && item->extraData) {
+				for (RE::ExtraDataList* xl : *item->extraData) {
+					if (IsWorn(xl)) {
+						return true;
+					}
+				}
+			}
+			return false;
+		}
+
+		// -------------------------------------------------------------------------------------------------------
+		// equip / unequip, done the way the inventory menu does it (game+0x676ADB5 in 1.512.105):
+		//   EquipObject   (object, count, list, false, false)
+		//   UnequipObject (object, count, list, true, false, false)
+		//   after an unequip:  AfterUnequip(player, object, false)
+		//   after both:        Refresh(player); player->currentProcess->vfunc[0x8A8 / 8](player, true, nullptr, false, false)
+		//
+		// Bare Equip/UnequipObject calls only flag the piece worn / not worn and leave the body model (BipedAnim)
+		// stale. A robe put on by hand and then taken off by a switch stayed in the model's upper-body slot; the
+		// cuirass put on next never reached the model: flagged as worn and counted for armour, but invisible, and the
+		// slot open for a second cuirass (2026-11-19). The follow-up calls are what keeps the model in step.
+		// -------------------------------------------------------------------------------------------------------
+
+		struct MenuFollowUp
+		{
+			using AfterUnequip_t = void (*)(RE::Actor*, RE::TESBoundObject*, bool);
+			using Refresh_t = void (*)(RE::Actor*);
+			using ProcessUpdate_t = void (*)(void*, RE::Actor*, bool, void*, bool, bool);
+			static constexpr std::size_t kProcessUpdateSlot = 0x8A8 / sizeof(void*);
+
+			AfterUnequip_t afterUnequip = nullptr;
+			Refresh_t      refresh = nullptr;
+			bool           found = false;
+
+			static const MenuFollowUp& Get()
+			{
+				static const MenuFollowUp s = [] {
+					MenuFollowUp m;
+					//  mov rdx,[rdi+10h] / xor r8d,r8d / mov rcx,player / call AfterUnequip / mov rcx,player / call Refresh /
+					//  mov rdx,player / xor r9d,r9d / mov [rsp+28h],sil / movzx r8d,bl / mov [rsp+20h],sil /
+					//  mov rcx,[rdx+138h] / mov rax,[rcx] / call [rax+8A8h]
+					constexpr const char* kPattern = "48 8B 57 10 45 33 C0 48 8B 0D ?? ?? ?? ?? E8 ?? ?? ?? ?? 48 8B 0D ?? ?? ?? ?? E8 ?? ?? ?? ?? "
+					                                 "48 8B 15 ?? ?? ?? ?? 45 33 C9 40 88 74 24 28 44 0F B6 C3 40 88 74 24 20 "
+					                                 "48 8B 8A 38 01 00 00 48 8B 01 FF 90 A8 08 00 00";
+					const auto target = [](std::uint8_t* a_call) {
+						return a_call + 5 + *reinterpret_cast<std::int32_t*>(a_call + 1);
+					};
+					if (std::uint8_t* site = scan::First(kPattern)) {
+						m.afterUnequip = reinterpret_cast<AfterUnequip_t>(target(site + 14));
+						m.refresh = reinterpret_cast<Refresh_t>(target(site + 26));
+						m.found = true;
+						logger::info("menu follow-up found: after-unequip game+0x{:X}, refresh game+0x{:X}", hook::Rva(m.afterUnequip), hook::Rva(m.refresh));
+					} else {
+						logger::error("menu follow-up not found in this game build - switched gear may not show on the character");
+					}
+					return m;
+				}();
+				return s;
+			}
+
+			void Run(RE::PlayerCharacter* a_player) const
+			{
+				refresh(a_player);
+				if (void* process = a_player->currentProcess) {
+					auto* update = reinterpret_cast<ProcessUpdate_t>((*reinterpret_cast<void***>(process))[kProcessUpdateSlot]);
+					update(process, a_player, true, nullptr, false, false);
+				}
+			}
+		};
+
+		void Wear(RE::PlayerCharacter* a_player, RE::TESBoundObject* a_object, std::int32_t a_count, RE::ExtraDataList* a_extra)
+		{
+			// the last argument is the NoUnequip lock: true would make the piece impossible to take off again
+			a_player->EquipObject(a_object, a_count, a_extra, false, false);
+			if (const auto& m = MenuFollowUp::Get(); m.found) {
+				m.Run(a_player);
+			}
+		}
+
+		void TakeOff(RE::PlayerCharacter* a_player, RE::TESBoundObject* a_object, std::int32_t a_count, RE::ExtraDataList* a_extra)
+		{
+			// CommonLib's UnequipObject always passes false as the fourth argument: called directly
+			using func_t = bool (RE::Actor::*)(RE::TESBoundObject*, std::int32_t, RE::ExtraDataList*, bool, bool, bool);
+			static REL::Relocation<func_t> func{ RE::ID::Actor::UnequipObject };
+			func(a_player, a_object, a_count, a_extra, true, false, false);
+			if (const auto& m = MenuFollowUp::Get(); m.found) {
+				m.afterUnequip(a_player, a_object, false);
+				m.Run(a_player);
+			}
+		}
+
+		// copies memory that may not be readable; no C++ objects in here (SEH)
+		bool SafeCopy(const void* a_from, void* a_to, std::size_t a_size)
+		{
+			__try {
+				std::memcpy(a_to, a_from, a_size);
+				return true;
+			} __except (EXCEPTION_EXECUTE_HANDLER) {
+				return false;
+			}
+		}
+
+		// What the body model (BipedAnim) references. CommonLib does not describe BipedAnim, so its memory is scanned
+		// for pointers to carried items. Seen in 1.512.105: one 0x20-byte entry per body slot from +0x98 (hair +0xB8,
+		// upper body +0xD8, ...). nullopt = no model or unreadable.
+		struct ModelRef
+		{
+			std::size_t         offset;
+			RE::TESBoundObject* object;
+		};
+
+		std::optional<std::vector<ModelRef>> ModelRefs(RE::PlayerCharacter* a_player)
+		{
+			constexpr std::size_t kScanBytes = 0x600;
+			RE::BipedAnim*        biped = a_player ? a_player->GetBiped() : nullptr;
+			std::array<std::uintptr_t, kScanBytes / sizeof(std::uintptr_t)> mem{};
+			if (!biped || !SafeCopy(biped, mem.data(), sizeof(mem))) {
+				return std::nullopt;
+			}
+			std::unordered_map<std::uintptr_t, RE::TESBoundObject*> carried;
+			if (auto* items = Items(a_player)) {
+				for (RE::ItemChange* item : *items) {
+					if (item && item->object) {
+						carried.emplace(reinterpret_cast<std::uintptr_t>(item->object), item->object);
+					}
+				}
+			}
+			std::vector<ModelRef> out;
+			for (std::size_t i = 0; i < mem.size(); ++i) {
+				if (const auto it = carried.find(mem[i]); it != carried.end()) {
+					out.push_back({ i * sizeof(std::uintptr_t), it->second });
+				}
+			}
+			return out;
+		}
+
+		std::string Describe(const std::optional<std::vector<ModelRef>>& a_refs)
+		{
+			if (!a_refs) {
+				return "body model: unreadable";
+			}
+			std::string out;
+			for (const auto& r : *a_refs) {
+				out += std::format("{}+0x{:X} '{}'", out.empty() ? "" : ", ", r.offset, NameOf(r.object));
+			}
+			return "body model: " + (out.empty() ? std::string("nothing carried") : out);
+		}
+
+		// Logs a warning with the worn set and the body model when something is off:
+		//   - two worn pieces claiming the same body slot (the engine never allows that)
+		//   - a worn armour / clothing piece the body model does not reference (worn, but not shown)
+		//   - with a_expected: expected pieces not worn, unexpected pieces worn
+		// Silent when all is well.
+		void CheckWorn(const std::string& a_label, const std::vector<std::uint32_t>* a_expected)
+		{
+			auto* player = RE::PlayerCharacter::GetSingleton();
+			if (!player) {
+				return;
+			}
+			const auto               worn = WornEntries(player);
+			const auto               model = ModelRefs(player);
+			std::vector<std::string> problems;
+
+			if (model) {
+				for (const auto& w : worn) {
+					// a shield next to a bow is worn but not shown; weapons, ammo and torches are not checked
+					const std::uint16_t slots = SlotMask(w.item->object);
+					const bool          shieldOnly = slots == (1u << 13);
+					if (slots && !shieldOnly && std::ranges::none_of(*model, [&](const ModelRef& r) { return r.object == w.item->object; })) {
+						problems.push_back(std::format("worn but not on the body model: {}", Describe(w)));
+					}
+				}
+			}
+			for (std::size_t i = 0; i < worn.size(); ++i) {
+				for (std::size_t j = i + 1; j < worn.size(); ++j) {
+					const std::uint16_t shared = SlotMask(worn[i].item->object) & SlotMask(worn[j].item->object);
+					// two rings legitimately share the ring bits, one per hand
+					const bool rings = (shared & ~0x00C0u) == 0;
+					if (shared && !rings) {
+						problems.push_back(std::format("slot clash: {} and {}", Describe(worn[i]), Describe(worn[j])));
+					}
+				}
+			}
+			if (a_expected) {
+				for (const std::uint32_t id : *a_expected) {
+					if (std::ranges::none_of(worn, [id](const WornEntry& w) { return w.item->object->GetFormID() == id; })) {
+						auto* form = RE::TESForm::LookupByID(id);
+						problems.push_back(std::format("expected but not worn: {}", Describe(static_cast<RE::TESBoundObject*>(form))));
+					}
+				}
+				for (const auto& w : worn) {
+					if (std::ranges::find(*a_expected, w.item->object->GetFormID()) == a_expected->end()) {
+						problems.push_back(std::format("worn but not expected: {}", Describe(w)));
+					}
+				}
+			}
+			if (problems.empty()) {
+				return;
+			}
+			std::string text;
+			for (const auto& p : problems) {
+				text += std::format("\n    ! {}", p);
+			}
+			for (const auto& w : worn) {
+				text += std::format("\n    worn  {}", Describe(w));
+			}
+			logger::warn("{}: {} problem(s){}\n    {}", a_label, problems.size(), text, Describe(model));
+		}
+
+		// TES thread: run a_task on the first main loop iteration at or after a_at (GetTickCount64)
+		void PostAt(ULONGLONG a_at, std::function<void()> a_task)
+		{
+			testhread::Post([a_at, task = std::move(a_task)]() mutable {
+				if (GetTickCount64() >= a_at) {
+					task();
+				} else {
+					PostAt(a_at, std::move(task));
+				}
+			});
+		}
+
 		// An unworn copy matching the saved one (own data or not). Looked up fresh after the unequips: an extra data
 		// list handed to the engine may be freed. nullptr = the engine picks a copy.
 		RE::ExtraDataList* UnwornList(RE::ItemChange* a_item, bool a_ownData)
@@ -191,6 +470,57 @@ namespace loadouts
 				}
 			}
 			return nullptr;
+		}
+
+		// -------------------------------------------------------------------------------------------------------
+		// the active loadout, kept in the save: GearLoadouts.esp holds a hidden token item (non-playable, nameless
+		// clothing, never worn). The player carries active + 1 of it, so every save remembers which loadout the worn
+		// gear belongs to. No token (plugin missing, or a save made before it): no loadout is active - the next switch
+		// files the worn gear nowhere, it only puts the chosen loadout on.
+		// -------------------------------------------------------------------------------------------------------
+
+		constexpr const char*   kPlugin = "GearLoadouts.esp";
+		constexpr std::uint32_t kTokenID = 0x800;   // keep in sync with tools/make_esp.py
+
+		RE::TESBoundObject* Token()
+		{
+			static bool warned = false;
+			const auto  it = g_indexByName.find(Lower(kPlugin));
+			auto*       form = it != g_indexByName.end() ? RE::TESForm::LookupByID((static_cast<std::uint32_t>(it->second) << 24) | kTokenID) : nullptr;
+			if (!form || form->GetFormType() != RE::FormType::Clothing) {
+				if (!warned) {
+					logger::warn("{} not loaded - no loadout is ever active, so worn gear is never saved into one", kPlugin);
+					warned = true;
+				}
+				return nullptr;
+			}
+			return static_cast<RE::TESBoundObject*>(form);
+		}
+
+		// the active loadout stored in the loaded save, -1 = none
+		int ReadToken(RE::PlayerCharacter* a_player)
+		{
+			auto* token = a_player ? Token() : nullptr;
+			const std::int32_t count = token ? a_player->GetItemCountInContainer(token) : 0;
+			return count >= 1 && count <= kCount ? count - 1 : -1;
+		}
+
+		void WriteToken(RE::PlayerCharacter* a_player, int a_active)
+		{
+			auto* token = a_player ? Token() : nullptr;
+			if (!token) {
+				return;
+			}
+			const std::int32_t have = a_player->GetItemCountInContainer(token);
+			const std::int32_t want = a_active + 1;
+			if (have < want) {
+				a_player->AddObjectToContainer(token, nullptr, want - have);
+			} else if (have > want) {
+				a_player->RemoveItem(token, nullptr, have - want, false, false, nullptr, nullptr, nullptr, true, false);
+			}
+			if (const std::int32_t now = a_player->GetItemCountInContainer(token); now != want) {
+				logger::error("active loadout token: carrying {} instead of {}", now, want);
+			}
 		}
 
 		// -------------------------------------------------------------------------------------------------------
@@ -240,7 +570,7 @@ namespace loadouts
 				ReadRoot();
 			}
 			g_key = a_key;
-			g_active = 0;
+			g_active = kNone;
 			for (auto& l : g_loadouts) {
 				l.clear();
 			}
@@ -255,7 +585,6 @@ namespace loadouts
 					SetNames(names);
 					return;
 				}
-				g_active = std::clamp(c->value("active", 0), 0, kCount - 1);
 				if (auto n = c->find("names"); n != c->end() && n->is_array()) {
 					for (std::size_t i = 0; i < n->size() && i < names.size(); ++i) {
 						std::string clean;
@@ -273,7 +602,7 @@ namespace loadouts
 						}
 					}
 				}
-				logger::info("loaded loadouts of {}: active {}", a_key, Name(g_active));
+				logger::info("loaded loadouts of {}", a_key);
 			} catch (const std::exception& ex) {
 				logger::error("saved loadouts of {} could not be read: {}", a_key, ex.what());
 			}
@@ -302,7 +631,8 @@ namespace loadouts
 					names = g_names;
 				}
 				g_root["version"] = 1;
-				g_root["characters"][g_key] = { { "active", g_active }, { "names", std::move(names) }, { "loadouts", std::move(all) } };
+				// the active loadout lives in the save (token), not here
+				g_root["characters"][g_key] = { { "names", std::move(names) }, { "loadouts", std::move(all) } };
 
 				// write to .tmp, then rename: a crash never leaves a half-written file
 				const auto path = FilePath();
@@ -325,7 +655,7 @@ namespace loadouts
 			}
 		}
 
-		// TES thread: make a_key the loaded character
+		// TES thread: make a_key the loaded character; the loaded save decides which loadout is active
 		void Use(const std::string& a_key)
 		{
 			if (g_indexByName.empty()) {
@@ -334,12 +664,20 @@ namespace loadouts
 			if (a_key != g_key) {
 				LoadCharacter(a_key);
 			}
+			if (const int saved = ReadToken(RE::PlayerCharacter::GetSingleton()); saved != g_active) {
+				logger::info("the loaded save has {} active (was {})", Name(saved), Name(g_active));
+				g_active = saved;
+			}
 			g_uiActive = g_active;
 		}
 
 		// -------------------------------------------------------------------------------------------------------
 		// the switch (TES thread)
 		// -------------------------------------------------------------------------------------------------------
+
+		constexpr ULONGLONG kCheckDelayMs = 500;   // the worn set is checked this long after a switch
+
+		std::uint32_t g_switches = 0;   // TES thread
 
 		void Switch(int a_to, const std::string& a_key)
 		{
@@ -357,27 +695,39 @@ namespace loadouts
 				MessageBeep(MB_ICONHAND);
 				return;
 			}
-			const int from = g_active;
+			const int           from = g_active;
+			const std::uint32_t n = ++g_switches;
+			const std::string   tag = std::format("switch #{} {} -> {}", n, Name(from), Name(a_to));
+			std::string         steps;   // one line per piece, logged with the summary
 
 			// 1. what is worn now becomes the old loadout; pieces the new one also holds stay on
-			const auto         worn = WornEntries(player);
-			std::vector<Saved> wanted = g_loadouts[a_to];
-			std::vector<Saved> now;
+			const auto             worn = WornEntries(player);
+			std::vector<Saved>     wanted = g_loadouts[a_to];
+			std::vector<Saved>     now;
 			std::vector<WornEntry> takeOff;
+			std::vector<std::uint32_t> expected;   // worn once the switch is done
 			for (const auto& w : worn) {
 				const std::uint32_t id = w.item->object->GetFormID();
 				now.push_back({ id, HasOwnData(w.extra) });
 				if (const auto it = std::ranges::find(wanted, id, &Saved::formID); it != wanted.end()) {
 					wanted.erase(it);
+					expected.push_back(id);
+					steps += std::format("\n    keep  {}", Describe(w));
 				} else {
 					takeOff.push_back(w);
 				}
 			}
-			g_loadouts[from] = std::move(now);
+			if (from != kNone) {
+				g_loadouts[from] = std::move(now);
+			} else {
+				steps += "\n    (no loadout was active: the worn gear is not saved anywhere)";
+			}
 
 			// 2. take off the rest
 			for (const auto& w : takeOff) {
-				player->UnequipObject(w.item->object, EquipCount(player, w.item->object), w.extra, false, true);
+				const std::string what = Describe(w);   // before: the extra data list may be freed by the unequip
+				TakeOff(player, w.item->object, EquipCount(player, w.item->object), w.extra);
+				steps += std::format("\n    off   {}{}", what, IsWornNow(player, w.item->object->GetFormID()) ? " -> still worn" : "");
 			}
 
 			// 3. put on what the new loadout holds and is still carried
@@ -387,20 +737,31 @@ namespace loadouts
 				auto* object = form && IsGear(static_cast<RE::TESBoundObject*>(form)) ? static_cast<RE::TESBoundObject*>(form) : nullptr;
 				if (!object || player->GetItemCountInContainer(object) <= 0) {
 					++missing;
+					steps += std::format("\n    miss  0x{:08X} {}", s.formID, !form ? "form not found" : !object ? "not gear" : std::format("{} not carried", Describe(object)));
 					continue;
 				}
 				RE::ExtraDataList* xl = UnwornList(FindEntry(player, s.formID), s.ownData);
-				// the last argument is the NoUnequip lock: true would make the piece impossible to take off again
-				player->EquipObject(object, EquipCount(player, object), xl, false, false);
+				Wear(player, object, EquipCount(player, object), xl);
+				expected.push_back(s.formID);
+				steps += std::format("\n    on    {} (copy: {}){}", Describe(object), xl ? (s.ownData ? "own data" : "plain") : "engine's pick",
+					IsWornNow(player, s.formID) ? "" : " -> not worn");
 			}
 
 			g_active = a_to;
 			g_uiActive = a_to;
+			WriteToken(player, a_to);
 			SaveCharacter();
 			push::Rebuild();
-			logger::info("switch {} -> {}: {} kept, {} taken off, {} equipped, {} missing", Name(from), Name(a_to),
-				worn.size() - takeOff.size(), takeOff.size(), wanted.size() - missing, missing);
+			logger::info("{}: {} kept, {} taken off, {} equipped, {} missing{}", tag, worn.size() - takeOff.size(), takeOff.size(),
+				wanted.size() - missing, missing, steps);
 			MessageBeep(MB_OK);
+
+			// once the engine had time to settle (the body model follows a frame later); a newer switch makes it moot
+			PostAt(GetTickCount64() + kCheckDelayMs, [n, tag, expected = std::move(expected)] {
+				if (n == g_switches) {
+					CheckWorn(tag, &expected);
+				}
+			});
 		}
 
 		bool InCombat(RE::PlayerCharacter* a_player)
@@ -421,11 +782,12 @@ namespace loadouts
 	const char* Name(int a_loadout)
 	{
 		static constexpr const char* kNames[kCount] = { "Default", "Loadout 1", "Loadout 2", "Loadout 3", "Loadout 4" };
-		return a_loadout >= 0 && a_loadout < kCount ? kNames[a_loadout] : "?";
+		return a_loadout >= 0 && a_loadout < kCount ? kNames[a_loadout] : a_loadout == kNone ? "no loadout" : "?";
 	}
 
 	void Init()
 	{
+		MenuFollowUp::Get();   // scan now, not on the first switch; logs whether it was found
 		g_indexByName.clear();
 		g_nameByIndex.fill({});
 		auto* dh = RE::TESDataHandler::GetSingleton();
@@ -512,6 +874,7 @@ namespace loadouts
 	{
 		if (!a_key.empty()) {
 			Use(a_key);
+			CheckWorn("inventory opened", nullptr);   // logs only a slot clash
 		}
 	}
 
