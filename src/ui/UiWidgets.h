@@ -1,13 +1,8 @@
 #pragma once
 
-// Gear Loadouts - building and reading UMG widgets through reflection.
+// Building and reading UMG widgets through reflection. Game thread only.
 //
-// Adapted from Menus Revamped (Oblivion Remastered) by cfa911, GPL-3.0-or-later (see NOTICE.md): engine/UiTree.cpp
-// (FindInTree, ShownOnScreen), engine/UiWidgets.cpp (AddToCanvas, Measure, ViewportScale), engine/UiText.cpp (SetText, Ink, the font setter), engine/UiCall.cpp (Load),
-// engine/UiWidgets.cpp RoundedBox (here RoundedBorder, for a Border).
-// Modified 2026-11-17: cut down to what the loadout bar needs; Prop / Slots / Content helpers added.
-//
-// Game thread only (GameThread.h).
+// Adapted from Menus Revamped (Oblivion Remastered) by cfa911, GPL-3.0-or-later (see NOTICE.md).
 
 #include <string>
 #include <string_view>
@@ -15,36 +10,28 @@
 
 namespace ui
 {
-	UE::UObject*              Prop(UE::UObject* a_object, std::string_view a_name);   // an object property by name
-	std::vector<UE::UObject*> Slots(UE::UObject* a_panel);       // a PanelWidget's slots (empty when not a panel)
-	UE::UObject*              Content(UE::UObject* a_slot);      // a PanelSlot's content widget
-	UE::UObject*              TreeRoot(UE::UObject* a_userWidget);   // a UserWidget's WidgetTree.RootWidget
+	UE::UObject*              Prop(UE::UObject* a_object, std::string_view a_name);   // object property by name
+	std::vector<UE::UObject*> Slots(UE::UObject* a_panel);                            // a PanelWidget's slots
+	UE::UObject*              Content(UE::UObject* a_slot);                           // a PanelSlot's widget
+	UE::UObject*              TreeRoot(UE::UObject* a_userWidget);                    // WidgetTree.RootWidget
 
-	// a widget by name anywhere under a user widget (its tree, panels' slots, nested user widgets' trees);
-	// bounded and SEH-guarded (a widget being built or destroyed can hold a garbage slot pointer)
+	// a widget by name anywhere under a user widget (nested trees too); bounded and SEH-guarded
 	UE::UObject* FindInTree(UE::UObject* a_userWidget, std::string_view a_name);
 
-	// on screen for real: the widget and every widget above it visible and not faded out; under a WidgetSwitcher only
-	// the active child counts (IsVisible alone lies there)
+	// the widget and every parent are visible and not faded out; under a WidgetSwitcher only the active child counts
 	bool ShownOnScreen(UE::UObject* a_widget);
 
-	// a new widget of a_classPath inside a CanvasPanel; *a_slot gets its CanvasPanelSlot
-	UE::UObject* AddToCanvas(UE::UObject* a_canvas, const wchar_t* a_classPath, const wchar_t* a_name, UE::UObject** a_slot);
-	// a new widget of a_classPath with a_outerTree as outer (to be put into a panel or content widget by the caller)
 	UE::UObject* NewWidget(UE::UObject* a_outerTree, const wchar_t* a_classPath, const wchar_t* a_name);
+	// a new widget as a child of a CanvasPanel; *a_slot gets its CanvasPanelSlot
+	UE::UObject* AddToCanvas(UE::UObject* a_canvas, const wchar_t* a_classPath, const wchar_t* a_name, UE::UObject** a_slot);
 
-	// where a laid-out widget is on the viewport (viewport units): top-left and size (world-context calls, guarded)
-	bool  Measure(UE::UObject* a_widget, double& a_x, double& a_y, double& a_width, double& a_height);
-	float ViewportScale();   // WidgetLayoutLibrary.GetViewportScale (viewport units -> pixels); 1 when unreadable
+	bool  Measure(UE::UObject* a_widget, double& a_x, double& a_y, double& a_width, double& a_height);   // viewport units
+	float ViewportScale();   // viewport units -> pixels; 1 when unreadable
 
 	bool SetText(UE::UObject* a_textWidget, const std::string& a_utf8);
 	void Ink(UE::UObject* a_textWidget, const float a_rgba[4]);   // text colour (linear RGBA), no shadow
-	bool SetFontSize(UE::UObject* a_textWidget, float a_size);   // its own Font with another Size, through SetFont
-
-	// an asset by object path ("/Game/X/Y.Y"): the loaded one, else loaded now (KismetSystemLibrary, Menus Revamped)
-	UE::UObject* Load(const wchar_t* a_path);
-	// the text widget's font: another font asset (and typeface; nullptr keeps the face) at a size, through SetFont
+	// font asset ("/Game/X/Y.Y") and typeface at a size; a missing asset or nullptr typeface keeps the current one
 	bool SetFont(UE::UObject* a_textWidget, const wchar_t* a_fontAsset, const wchar_t* a_typeface, float a_size);
-	// a Border's background as a rounded box with a fill and an outline (linear RGBA), through SetBrush
+	// a Border's background as a rounded box with fill and outline (linear RGBA)
 	bool RoundedBorder(UE::UObject* a_border, const float a_fill[4], const float a_outline[4], float a_width, float a_radius);
 }

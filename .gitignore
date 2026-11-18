@@ -1,5 +1,6 @@
 # dot folders
 .cache/
+.claude/
 .idea/
 .vs/
 .vscode/
@@ -12,3 +13,5 @@ vs*/
 # files
 *.zip
 compile_commands.json
+CLAUDE.md
+GearLoadouts.json

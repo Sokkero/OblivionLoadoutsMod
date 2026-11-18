@@ -1,6 +1,5 @@
-// Gear Loadouts - calling Unreal functions through reflection.
-// Adapted from Menus Revamped (Oblivion Remastered) by cfa911, GPL-3.0-or-later (see NOTICE.md), engine/UiCall.cpp
-// and engine/UiText.cpp. Modified 2026-11-17: no ProcessEvent watcher bookkeeping; GetText and Name added here.
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Adapted from Menus Revamped by cfa911 (see NOTICE.md).
 
 #include "ui/UiCall.h"
 
@@ -10,7 +9,7 @@ namespace ui
 {
 	namespace
 	{
-		// __try cannot share a function with a destructor: the guard is its own function
+		// __try cannot share a function with destructors
 		bool ProcessEventGuarded(UE::UObject* a_obj, UE::UFunction* a_fn, void* a_params)
 		{
 			__try {
@@ -20,23 +19,30 @@ namespace ui
 				return false;
 			}
 		}
+
+		UE::UFunction* Find(UE::UObject* a_obj, const wchar_t* a_fn)
+		{
+			return a_obj ? a_obj->FindFunction(UE::FName(a_fn, UE::EFindName::Find)) : nullptr;
+		}
+
+		std::size_t FrameSize(UE::UFunction* a_fn)
+		{
+			return static_cast<std::size_t>(std::max(reinterpret_cast<UE::UStruct*>(a_fn)->propertiesSize, 0));
+		}
 	}
 
 	Call::Call(UE::UObject* a_obj, const wchar_t* a_fn) :
 		m_obj(a_obj),
-		m_fn(a_obj ? a_obj->FindFunction(UE::FName(a_fn, UE::EFindName::Find)) : nullptr)
+		m_fn(Find(a_obj, a_fn))
 	{
 		if (m_fn) {
-			m_params.assign(static_cast<std::size_t>(std::max(reinterpret_cast<UE::UStruct*>(m_fn)->propertiesSize, 0)) + 16, 0);
+			m_params.assign(FrameSize(m_fn) + 16, 0);
 		}
 	}
 
 	void* Call::At(std::string_view a_name)
 	{
-		if (!m_fn) {
-			return nullptr;
-		}
-		const auto off = reflect::Offset(reinterpret_cast<UE::UStruct*>(m_fn), a_name);
+		const auto off = m_fn ? reflect::Offset(reinterpret_cast<UE::UStruct*>(m_fn), a_name) : -1;
 		return off >= 0 ? m_params.data() + off : nullptr;
 	}
 
@@ -47,7 +53,7 @@ namespace ui
 
 	bool Call::Run()
 	{
-		if (!m_fn || !m_obj) {
+		if (!m_fn) {
 			return false;
 		}
 		m_obj->ProcessEvent(m_fn, m_params.data());
@@ -56,24 +62,17 @@ namespace ui
 
 	bool Call::RunGuarded()
 	{
-		return m_fn && m_obj && GuardedProcessEvent(m_obj, m_fn, m_params.data());
-	}
-
-	bool GuardedProcessEvent(UE::UObject* a_obj, UE::UFunction* a_fn, void* a_params)
-	{
-		return a_obj && a_fn && ProcessEventGuarded(a_obj, a_fn, a_params);
+		return m_fn && ProcessEventGuarded(m_obj, m_fn, m_params.data());
 	}
 
 	bool CallFirst(UE::UObject* a_obj, const wchar_t* a_fn, const void* a_bytes, std::size_t a_size)
 	{
-		auto*      fn = a_obj ? a_obj->FindFunction(UE::FName(a_fn, UE::EFindName::Find)) : nullptr;
-		auto*      st = reinterpret_cast<UE::UStruct*>(fn);
-		auto*      f = st ? reinterpret_cast<std::uint8_t*>(st->childProperties) : nullptr;
-		const auto off = f ? *reinterpret_cast<const std::int32_t*>(f + 0x44) : -1;
+		auto*      fn = Find(a_obj, a_fn);
+		const auto off = fn ? reflect::FirstOffset(reinterpret_cast<UE::UStruct*>(fn)) : -1;
 		if (off < 0) {
 			return false;
 		}
-		std::vector<std::uint8_t> params(static_cast<std::size_t>(std::max(st->propertiesSize, 0)) + a_size + 16, 0);
+		std::vector<std::uint8_t> params(FrameSize(fn) + a_size + 16, 0);
 		std::memcpy(params.data() + off, a_bytes, a_size);
 		a_obj->ProcessEvent(fn, params.data());
 		return true;
@@ -96,7 +95,7 @@ namespace ui
 			return nullptr;
 		}
 		lastScan = now;
-		// the game's controller is a SUBCLASS (VAltarPlayerController): an exact class match never finds it (MR)
+		// the game's controller is a subclass (VAltarPlayerController), so match with IsChildOf
 		auto*        cls = Class(L"/Script/Engine.PlayerController");
 		auto*        arr = UE::FUObjectArray::GetSingleton();
 		UE::UObject* found = nullptr;
@@ -107,33 +106,15 @@ namespace ui
 				auto* item = arr->IndexToObject(i);
 				auto* o = item ? reinterpret_cast<UE::UObject*>(item->object) : nullptr;
 				auto* oc = o ? o->GetClass() : nullptr;
-				// not a class default object, not an archetype
-				if (oc && oc->IsChildOf(cls) && (static_cast<std::int32_t>(o->objectFlags) & 0x30) == 0) {
+				constexpr std::int32_t kDefaultOrArchetype = 0x30;   // RF_ClassDefaultObject | RF_ArchetypeObject
+				if (oc && oc->IsChildOf(cls) && (static_cast<std::int32_t>(o->objectFlags) & kDefaultOrArchetype) == 0) {
 					found = o;
 				}
 			}
 			arr->UnlockInternalArray();
 		}
-		cached = found ? reflect::Hold(found) : reflect::Handle{};
+		cached = reflect::Hold(found);
 		return found;
-	}
-
-	std::string GetText(UE::UObject* a_widget)
-	{
-		Call  c(a_widget, L"GetText");
-		void* ret = c ? c.At("ReturnValue") : nullptr;
-		if (!ret || !c.Run()) {
-			return {};
-		}
-		auto* ft = static_cast<UE::FText*>(ret);
-		// a zeroed FText (never set) crashes the engine when read (MR, SLS lesson)
-		const auto* raw = reinterpret_cast<void* const*>(ft);
-		if (!raw[0] || !raw[1]) {
-			return {};
-		}
-		std::string out = reflect::Utf8(ft->ToString());
-		ft->~FText();   // the returned copy holds a reference
-		return out;
 	}
 
 	std::string Name(UE::UObject* a_object)

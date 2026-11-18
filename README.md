@@ -1,66 +1,61 @@
-# Gear Loadouts (Oblivion Remastered), stage 1
+# Gear Loadouts
 
-OBSE64 plugin. Switch between 5 saved sets of worn gear. **No item is ever moved.** No UI yet.
+An OBSE64 plugin for **The Elder Scrolls IV: Oblivion Remastered** that lets you switch between 5 saved sets of worn gear with a single click.
+A loadout only remembers what you were wearing, so the same item can be part of as many loadouts as you like.
 
-**Status: v0.1.2. Compiled. Hotkey switching and the combat block tested in game (2026-11-17).**
+<img src="assets/inv.png" alt="Loadout buttons in the inventory"/>
 
-Known problems:
+## Features
+- 5 loadouts: `Default` and `Loadout 1` - `Loadout 4`
+- A row of buttons in the inventory menu
+  - Left click switches to that loadout
+  - Right click opens a popup to rename it (max. 15 characters, `Enter` saves, `Esc` cancels)
+- Hotkeys: `Ctrl + Numpad 0` - `Ctrl + Numpad 4`
+- Every equipped item is part of a loadout: armour, shields, clothing, rings, amulets, weapons, ammo and torches
+- Pieces that are in both loadouts stay on, pieces that are no longer in your inventory are skipped
+- Switching is blocked while something is fighting you
+- Loadouts are saved per character
 
-- Each character has its own loadouts (key = the character GUID from the save system). Tested with two characters.
-- Not yet tested: allies fighting next to you; the beeps.
+### How switching works
+When switching from loadout A to B:
+1) Everything you are wearing right now is saved as A
+2) Everything B does not hold is taken off
+3) Everything B holds that is still in your inventory is put on
 
-## What it does
+Switching to a loadout for the first time takes everything off, since that loadout is still empty.
 
-- 5 loadouts: Default, Loadout 1-4. Default is active at the start.
-- Hotkeys (game window in focus): **Ctrl + Numpad 0** = Default, **Ctrl + Numpad 1..4** = Loadout 1..4.
-- Switch A -> B:
-  1. Save the gear worn now as A.
-  2. Take off every piece that B does not hold. A piece that both hold stays on.
-  3. Equip each piece of B that is still in the inventory. Missing pieces are skipped.
-- Gear = every equipped item: armour, shields, clothing, rings, amulets, ammo, weapons, torches.
-- Blocked while actors fight the player, with a HUD message. Fights between NPCs do not block.
-- Feedback: normal beep = done, error beep = refused. Details in the log.
-- **The first switch to a loadout that was never saved takes everything off.** This follows the spec.
+### Where the data lives
+The loadouts are saved in `GearLoadouts.json` next to the DLL, keyed by the character's ID. They are not part of the save file (OBSE64 has no interface for that yet), so loading an older save keeps your newest loadouts.
 
-## Where the data lives
+## Installation
+### Requirements
+- [OBSE64](https://github.com/ianpatt/obse64) (tested with 0.2.2 on game version 1.512.105)
+- Address Library for OBSE64
+- Simple Loadout System has to be **disabled**, since both hook the same engine call
 
-`GearLoadouts.json` beside the DLL. One entry per character name. Items are saved as plugin name + local ID.
-It is not part of the save file (OBSE64 has no save data interface). Loading an older save uses the newest loadouts.
+### Setup
+1) Copy `GearLoadouts.dll` into `Oblivion Remastered\OblivionRemastered\Binaries\Win64\OBSE\Plugins\`
+2) Start the game through `obse64_loader.exe`
+
+If something does not work, the log can be found at `Documents\My Games\Oblivion Remastered\OBSE\Logs\GearLoadouts.log`.
+The logs of the last two sessions are kept as `GearLoadouts.1.log` and `GearLoadouts.2.log`, so after a crash and restart the crashed session is in `GearLoadouts.1.log`. The logs never take up more than 15 MB.
 
 ## Build
+### Requirements
+- Windows
+- Visual Studio (Build Tools are enough) with MSVC and C++23 support
+- [xmake](https://xmake.io)
+- Git
 
-Needs Windows, Git, Visual Studio (MSVC, C++23) and [xmake](https://xmake.io).
+### Building the project
+1) `git clone --recursive https://github.com/Sokkero/OblivionLoadoutsMod.git`
+   - Already cloned without `--recursive`? Run `git submodule update --init --recursive`
+2) Run `xmake build GearLoadouts` from PowerShell in the project root
+3) The DLL can be found in `build\windows\x64\releasedbg\GearLoadouts.dll`
 
-```
-git clone --recursive <this repo>
-cd <repo folder>
-xmake build GearLoadouts
-```
-
-If you cloned without `--recursive`, run `git submodule update --init --recursive` first.
-
-Run xmake from PowerShell. Edit `author` in `xmake.lua` and the name in `NOTICE.md` first.
-The DLL lands in `build\...\GearLoadouts.dll`. Copy it to
-`...\Oblivion Remastered\OblivionRemastered\Binaries\Win64\OBSE\Plugins\`.
-
-## Before the first run
-
-- Keep **SimpleLoadoutSystem disabled**. Both hook the same main-loop call.
-- Needs OBSE64 0.2.2 and the Address Library for 1.512.105.
-- Start the game with `obse64_loader.exe`.
-
-## First test
-
-1. Log: `Documents\My Games\Oblivion Remastered\OBSE\Logs\GearLoadouts.log`. Look for
-   `Gear Loadouts 0.1.2 loaded`, `OBSE message 2`, `plugins loaded by the game`, `tes thread: ... now drains`.
-2. Wear set A. Press **Ctrl+Numpad1**. Expect: all gear off, one beep.
-3. Wear set B. Press **Ctrl+Numpad0**. Expect: set A back on.
-4. Press **Ctrl+Numpad1**. Expect: set B back on.
-5. Put the same helmet in both sets. Expect: it stays on across the switch.
-6. Fight an enemy that attacks you. Press a hotkey. Expect: error beep, `refused: in combat` in the log.
-7. Send the log and say what you saw.
+## Credits
+Parts of this project are adapted from [Simple Loadout System](https://github.com/ApocryphaRealm/SimpleLoadoutSystemOR) by ApocryphaRealm and [Menus Revamped](https://github.com/cfa911/Oblivion-Remastered---Mod---Menus-Revamped) by cfa911. Built on [CommonLibOB64](https://github.com/libxse/commonlibob64).
+See `NOTICE.md` for the details.
 
 ## Licence
-
-GPL-3.0-or-later. Contains code adapted from Simple Loadout System (Oblivion Remastered) by ApocryphaRealm.
-See `NOTICE.md` and `THIRD_PARTY_NOTICES.md`. Source must stay public with every release.
+GPL-3.0-or-later, see `LICENSE`, `NOTICE.md` and `THIRD_PARTY_NOTICES.md`.

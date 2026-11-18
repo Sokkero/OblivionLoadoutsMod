@@ -1,13 +1,9 @@
 #pragma once
 
-// Gear Loadouts - calling Unreal (UMG) functions through reflection.
+// Calling Unreal functions through reflection: parameters are laid out by name from the UFunction's properties.
+// CommonLibOB64 declares no UMG types, so every UI call goes through here. Game thread only.
 //
-// Adapted from Menus Revamped (Oblivion Remastered) by cfa911, GPL-3.0-or-later (see NOTICE.md), engine/Ui.h and
-// engine/UiCall.cpp. Taken: Call (parameters laid out by NAME from the UFunction's own properties), the SEH-guarded
-// ProcessEvent, CallFirst, the player-controller search (a SUBCLASS of PlayerController), GetText.
-// Removed: the ProcessEvent watcher bookkeeping (pe::OwnCall; we have no ProcessEvent hook). Modified 2026-11-17.
-//
-// CommonLibOB64 declares no UMG types, so every UI call goes through here. Game thread only (GameThread.h).
+// Adapted from Menus Revamped (Oblivion Remastered) by cfa911, GPL-3.0-or-later (see NOTICE.md).
 
 #include <string>
 #include <string_view>
@@ -27,11 +23,11 @@ namespace ui
 		template <class T>
 		bool Set(std::string_view a_name, const T& a_value)
 		{
-			if (void* p = At(a_name)) {
+			void* p = At(a_name);
+			if (p) {
 				std::memcpy(p, &a_value, sizeof(T));
-				return true;
 			}
-			return false;
+			return p != nullptr;
 		}
 
 		template <class T>
@@ -45,7 +41,7 @@ namespace ui
 		}
 
 		bool Run();
-		bool RunGuarded();   // for a call that takes a world-context object: false when the engine faulted
+		bool RunGuarded();   // SEH-guarded, for world-context calls that can fault during a quit or load
 
 	private:
 		UE::UObject*              m_obj;
@@ -53,13 +49,16 @@ namespace ui
 		std::vector<std::uint8_t> m_params;
 	};
 
-	// ProcessEvent under a structured-exception guard (MR: world-context calls crashed on quit / load)
-	bool GuardedProcessEvent(UE::UObject* a_obj, UE::UFunction* a_fn, void* a_params);
-	// a call whose only (first) parameter is given as raw bytes
+	// a call whose first parameter is given as raw bytes
 	bool CallFirst(UE::UObject* a_obj, const wchar_t* a_fn, const void* a_bytes, std::size_t a_size);
 
+	template <class T>
+	bool CallFirst(UE::UObject* a_obj, const wchar_t* a_fn, const T& a_value)
+	{
+		return CallFirst(a_obj, a_fn, &a_value, sizeof(T));
+	}
+
 	UE::UClass*  Class(const wchar_t* a_path);   // a loaded class by path, nullptr when not loaded
-	UE::UObject* PlayerController();             // looked for at most every 2 s; a slot-checked handle in between
-	std::string  GetText(UE::UObject* a_widget);   // a text widget's GetText(), UTF-8; empty when it has none
-	std::string  Name(UE::UObject* a_object);      // the object's FName, "-" for nullptr
+	UE::UObject* PlayerController();             // cached; rescanned at most every 2 s
+	std::string  Name(UE::UObject* a_object);    // the object's FName, "-" for nullptr
 }

@@ -1,8 +1,7 @@
 # Third-party components and their notices
 
-Simple Loadout System (Oblivion Remastered) as a whole is GPL-3.0-or-later (`LICENSE`, `NOTICE.md`). Every component
-below is linked into SimpleLoadoutSystem.dll; each is under a GPL-compatible licence, and its notice is reproduced as
-that licence requires. Versions are the ones this build pins.
+Gear Loadouts as a whole is GPL-3.0-or-later (`LICENSE`, `NOTICE.md`). Every component below is linked into
+GearLoadouts.dll; each is under a GPL-compatible licence, and its notice is reproduced as that licence requires.
 
 ## CommonLibOB64 and commonlib-shared - GPL-3.0
 

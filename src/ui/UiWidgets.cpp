@@ -1,10 +1,10 @@
-// Gear Loadouts - building and reading UMG widgets.
-// Adapted from Menus Revamped (Oblivion Remastered) by cfa911, GPL-3.0-or-later (see NOTICE.md).
-// Modified 2026-11-17 (see UiWidgets.h).
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Adapted from Menus Revamped by cfa911 (see NOTICE.md).
 
 #include "ui/UiWidgets.h"
 
 #include "Reflect.h"
+#include "Text.h"
 #include "ui/UiCall.h"
 
 namespace ui
@@ -48,35 +48,55 @@ namespace ui
 			return nullptr;
 		}
 
-		UE::UObject* SearchGuarded(UE::UObject* a_w, std::string_view a_name, bool* a_faulted)
+		// a widget being built or destroyed can hold a garbage slot pointer
+		UE::UObject* SearchGuarded(UE::UObject* a_w, std::string_view a_name)
 		{
 			__try {
 				int budget = 4000;
 				return Search(a_w, a_name, 0, budget);
 			} __except (GetExceptionCode() == EXCEPTION_ACCESS_VIOLATION ? EXCEPTION_EXECUTE_HANDLER : EXCEPTION_CONTINUE_SEARCH) {
-				*a_faulted = true;
 				return nullptr;
 			}
 		}
 
-		std::wstring Wide(const std::string& a_utf8)
-		{
-			if (a_utf8.empty()) {
-				return {};
-			}
-			const int    n = MultiByteToWideChar(CP_UTF8, 0, a_utf8.data(), static_cast<int>(a_utf8.size()), nullptr, 0);
-			std::wstring out(n > 0 ? static_cast<std::size_t>(n) : 0, L'\0');
-			if (n > 0) {
-				MultiByteToWideChar(CP_UTF8, 0, a_utf8.data(), static_cast<int>(a_utf8.size()), out.data(), n);
-			}
-			return out;
-		}
-
 		float RenderOpacity(UE::UObject* a_widget)
 		{
-			const auto  off = reflect::Offset(a_widget->GetClass(), "RenderOpacity");
-			const auto* at = off >= 0 ? reflect::At<float>(a_widget, off) : nullptr;
+			const auto* at = reflect::At<float>(a_widget, reflect::Offset(a_widget->GetClass(), "RenderOpacity"));
 			return at ? *at : 1.0f;
+		}
+
+		UE::UObject* Default(const wchar_t* a_classPath)
+		{
+			auto* cls = Class(a_classPath);
+			return cls ? cls->GetDefaultObject(false) : nullptr;
+		}
+
+		// an asset by object path: the loaded one, else loaded now through KismetSystemLibrary
+		UE::UObject* Load(const wchar_t* a_path)
+		{
+			if (!a_path) {
+				return nullptr;
+			}
+			if (auto* o = UE::StaticFindObject<UE::UObject>(nullptr, nullptr, a_path)) {
+				return o;
+			}
+			auto*      cdo = Default(L"/Script/Engine.KismetSystemLibrary");
+			Call       mk(cdo, L"MakeSoftObjectPath");
+			Call       conv(cdo, L"Conv_SoftObjPathToSoftObjRef");
+			Call       load(cdo, L"LoadAsset_Blocking");
+			void*      path = mk.At("PathString");
+			const auto pathSize = mk.Size("ReturnValue");
+			const auto refSize = conv.Size("ReturnValue");
+			if (!mk || !conv || !load || !path || pathSize <= 0 || refSize <= 0 || conv.Size("SoftObjectPath") != pathSize || load.Size("Asset") != refSize) {
+				return nullptr;
+			}
+			new (path) UE::FString(a_path);   // never destroyed: a tiny one-time leak per asset
+			mk.Run();
+			std::memcpy(conv.At("SoftObjectPath"), mk.At("ReturnValue"), static_cast<std::size_t>(pathSize));
+			conv.Run();
+			std::memcpy(load.At("Asset"), conv.At("ReturnValue"), static_cast<std::size_t>(refSize));
+			load.Run();
+			return load.Get<UE::UObject*>("ReturnValue");
 		}
 	}
 
@@ -96,7 +116,7 @@ namespace ui
 		if (!IsA(a_panel, panelWidget)) {
 			return out;
 		}
-		const auto* arr = reflect::At<RawArray>(a_panel, reflect::Offset(reinterpret_cast<UE::UStruct*>(panelWidget), "Slots"));
+		const auto* arr = reflect::At<RawArray>(a_panel, reflect::Offset(panelWidget, "Slots"));
 		for (std::int32_t i = 0; arr && arr->data && i < arr->num && i < 512; ++i) {
 			out.push_back(arr->data[i]);
 		}
@@ -110,18 +130,12 @@ namespace ui
 
 	UE::UObject* TreeRoot(UE::UObject* a_userWidget)
 	{
-		auto* tree = Prop(a_userWidget, "WidgetTree");
-		return tree ? Prop(tree, "RootWidget") : nullptr;
+		return Prop(Prop(a_userWidget, "WidgetTree"), "RootWidget");
 	}
 
 	UE::UObject* FindInTree(UE::UObject* a_userWidget, std::string_view a_name)
 	{
-		bool  faulted = false;
-		auto* found = SearchGuarded(a_userWidget, a_name, &faulted);
-		if (faulted) {
-			logger::warn("ui: a widget tree could not be read (access violation) while looking for {} - skipped", a_name);
-		}
-		return found;
+		return SearchGuarded(a_userWidget, a_name);
 	}
 
 	bool ShownOnScreen(UE::UObject* a_widget)
@@ -130,26 +144,26 @@ namespace ui
 		static auto* treeClass = Class(L"/Script/UMG.WidgetTree");
 		static auto* slotClass = Class(L"/Script/UMG.PanelSlot");
 		static auto* switcherClass = Class(L"/Script/UMG.WidgetSwitcher");
-		const auto   slotOff = widgetClass ? reflect::Offset(reinterpret_cast<UE::UStruct*>(widgetClass), "Slot") : -1;
-		const auto   parentOff = slotClass ? reflect::Offset(reinterpret_cast<UE::UStruct*>(slotClass), "Parent") : -1;
+		const auto   slotOff = widgetClass ? reflect::Offset(widgetClass, "Slot") : -1;
+		const auto   parentOff = slotClass ? reflect::Offset(slotClass, "Parent") : -1;
 		UE::UObject* w = a_widget;
 		for (int depth = 0; w && depth < 40; ++depth) {
 			Call vis(w, L"IsVisible");
 			if (!vis) {
-				return depth > 0;   // above the widgets: shown so far
+				return depth > 0;   // walked above the widgets
 			}
 			if (!vis.Run() || !vis.Get<bool>("ReturnValue") || RenderOpacity(w) < 0.05f) {
 				return false;
 			}
 			auto*        slot = slotOff >= 0 ? *reflect::At<UE::UObject*>(w, slotOff) : nullptr;
 			UE::UObject* next = slot && parentOff >= 0 ? *reflect::At<UE::UObject*>(slot, parentOff) : nullptr;
-			if (next && switcherClass && next->GetClass()->IsChildOf(switcherClass)) {
+			if (IsA(next, switcherClass)) {
 				Call active(next, L"GetActiveWidget");
 				if (active && active.Run() && active.Get<UE::UObject*>("ReturnValue") != w) {
 					return false;
 				}
 			}
-			if (!next) {   // a tree's root widget: the user widget that owns the tree
+			if (!next) {   // a tree's root widget: continue with the user widget owning the tree
 				auto* outer = w->GetOuter();
 				next = outer && treeClass && outer->GetClass() == treeClass ? outer->GetOuter() : nullptr;
 			}
@@ -167,7 +181,7 @@ namespace ui
 	UE::UObject* AddToCanvas(UE::UObject* a_canvas, const wchar_t* a_classPath, const wchar_t* a_name, UE::UObject** a_slot)
 	{
 		*a_slot = nullptr;
-		auto* w = NewWidget(a_canvas ? a_canvas->GetOuter() : nullptr, a_classPath, a_name);   // the canvas's outer: its widget tree
+		auto* w = NewWidget(a_canvas ? a_canvas->GetOuter() : nullptr, a_classPath, a_name);   // outer = the canvas's widget tree
 		if (!w) {
 			return nullptr;
 		}
@@ -178,22 +192,21 @@ namespace ui
 		if (!*a_slot) {
 			return nullptr;
 		}
-		const bool no = false;
-		CallFirst(*a_slot, L"SetAutoSize", &no, sizeof(no));
+		CallFirst(*a_slot, L"SetAutoSize", false);
 		return w;
 	}
 
 	bool SetText(UE::UObject* a_textWidget, const std::string& a_utf8)
 	{
 		Call  c(a_textWidget, L"SetText");
-		void* at = c ? c.At("InText") : nullptr;
+		void* at = c.At("InText");
 		if (!at) {
 			return false;
 		}
-		const std::wstring w = Wide(a_utf8);
-		auto*              text = new (at) UE::FText(UE::FText::AsCultureInvariant(UE::FString(w.c_str())));
+		const std::wstring w = text::Wide(a_utf8);
+		auto*              t = new (at) UE::FText(UE::FText::AsCultureInvariant(UE::FString(w.c_str())));
 		c.Run();
-		text->~FText();
+		t->~FText();
 		return true;
 	}
 
@@ -202,19 +215,18 @@ namespace ui
 		struct SlateColor
 		{
 			float        rgba[4];
-			std::uint8_t rule;
+			std::uint8_t rule;   // UseColor_Specified
 			std::uint8_t pad[7];
 		} ink{ { a_rgba[0], a_rgba[1], a_rgba[2], a_rgba[3] }, 0, {} };
-		CallFirst(a_textWidget, L"SetColorAndOpacity", &ink, sizeof(ink));
-		const float shadow[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
-		CallFirst(a_textWidget, L"SetShadowColorAndOpacity", shadow, sizeof(shadow));
+		CallFirst(a_textWidget, L"SetColorAndOpacity", ink);
+		const float noShadow[4] = {};
+		CallFirst(a_textWidget, L"SetShadowColorAndOpacity", noShadow);
 	}
 
 	bool Measure(UE::UObject* a_w, double& a_x, double& a_y, double& a_width, double& a_height)
 	{
-		auto*        pc = PlayerController();
-		static auto* lib = Class(L"/Script/UMG.SlateBlueprintLibrary");
-		auto*        cdo = lib ? lib->GetDefaultObject(false) : nullptr;
+		auto* pc = PlayerController();
+		auto* cdo = Default(L"/Script/UMG.SlateBlueprintLibrary");
 		if (!a_w || !pc || !cdo) {
 			return false;
 		}
@@ -223,122 +235,61 @@ namespace ui
 		if (!geo || gsize <= 0 || !geo.Run()) {
 			return false;
 		}
-		Call  size(cdo, L"GetLocalSize");
-		void* g = size.At("Geometry");
-		if (!size || !g || size.Size("Geometry") != gsize) {
+		// copy the geometry into another call's Geometry parameter
+		const auto withGeometry = [&](Call& a_call) {
+			void* g = a_call.At("Geometry");
+			if (!g || a_call.Size("Geometry") != gsize) {
+				return false;
+			}
+			std::memcpy(g, geo.At("ReturnValue"), static_cast<std::size_t>(gsize));
+			return true;
+		};
+		Call size(cdo, L"GetLocalSize");
+		if (!withGeometry(size)) {
 			return false;
 		}
-		std::memcpy(g, geo.At("ReturnValue"), static_cast<std::size_t>(gsize));
 		size.Run();
 		const auto local = size.Get<std::array<double, 2>>("ReturnValue");
 		const auto toViewport = [&](double a_lx, double a_ly, double& a_vx, double& a_vy) {
-			Call  c(cdo, L"LocalToViewport");
-			void* gg = c.At("Geometry");
-			if (!c || !gg || c.Size("Geometry") != gsize) {
+			Call c(cdo, L"LocalToViewport");
+			if (!withGeometry(c)) {
 				return false;
 			}
 			c.Set("WorldContextObject", pc);
-			std::memcpy(gg, geo.At("ReturnValue"), static_cast<std::size_t>(gsize));
-			const double lc[2] = { a_lx, a_ly };
-			c.Set("LocalCoordinate", lc);
+			c.Set("LocalCoordinate", std::array{ a_lx, a_ly });
 			if (!c.RunGuarded()) {
-				return false;   // a world-context call: fault-guarded (a quit, a load)
+				return false;
 			}
-			const auto vpos = c.Get<std::array<double, 2>>("ViewportPosition");
-			a_vx = vpos[0];
-			a_vy = vpos[1];
+			const auto v = c.Get<std::array<double, 2>>("ViewportPosition");
+			a_vx = v[0];
+			a_vy = v[1];
 			return true;
 		};
-		double x0 = 0, y0 = 0, x1 = 0, y1 = 0;
-		if (!toViewport(0.0, 0.0, x0, y0) || !toViewport(local[0], local[1], x1, y1)) {
+		double x1 = 0, y1 = 0;
+		if (!toViewport(0.0, 0.0, a_x, a_y) || !toViewport(local[0], local[1], x1, y1)) {
 			return false;
 		}
-		a_x = x0;
-		a_y = y0;
-		a_width = x1 - x0;
-		a_height = y1 - y0;
+		a_width = x1 - a_x;
+		a_height = y1 - a_y;
 		return local[0] > 0.0 && a_width > 1.0 && a_height > 1.0;
 	}
 
 	float ViewportScale()
 	{
-		static auto* lib = Class(L"/Script/UMG.WidgetLayoutLibrary");
-		auto*        cdo = lib ? lib->GetDefaultObject(false) : nullptr;
-		auto*        pc = PlayerController();
-		if (!cdo || !pc) {
-			return 1.0f;
-		}
-		Call c(cdo, L"GetViewportScale");
-		if (!c) {
+		auto* pc = PlayerController();
+		Call  c(Default(L"/Script/UMG.WidgetLayoutLibrary"), L"GetViewportScale");
+		if (!c || !pc) {
 			return 1.0f;
 		}
 		c.Set("WorldContextObject", pc);
 		return c.RunGuarded() ? c.Get<float>("ReturnValue") : 1.0f;
 	}
 
-	bool SetFontSize(UE::UObject* a_textWidget, float a_size)
-	{
-		// copy the widget's FSlateFontInfo, change Size, hand it to SetFont (as Menus Revamped's ApplyFont does)
-		static auto* fontInfo = UE::StaticFindObject<UE::UStruct>(nullptr, nullptr, L"/Script/SlateCore.SlateFontInfo");
-		if (!a_textWidget || !fontInfo) {
-			return false;
-		}
-		auto*      cls = a_textWidget->GetClass();
-		const auto fontOff = reflect::Offset(cls, "Font");
-		const auto fontSize = reflect::Size(cls, "Font");
-		const auto sizeOff = reflect::Offset(fontInfo, "Size");
-		if (fontOff < 0 || fontSize <= 0 || sizeOff < 0 || reflect::Size(fontInfo, "Size") != 4 || sizeOff + 4 > fontSize) {
-			return false;
-		}
-		Call set(a_textWidget, L"SetFont");
-		void* at = set ? set.At("InFontInfo") : nullptr;
-		if (!at || set.Size("InFontInfo") != fontSize) {
-			return false;
-		}
-		std::memcpy(at, reflect::At<std::uint8_t>(a_textWidget, fontOff), static_cast<std::size_t>(fontSize));
-		std::memcpy(static_cast<std::uint8_t*>(at) + sizeOff, &a_size, sizeof(a_size));
-		return set.Run();
-	}
-
-	UE::UObject* Load(const wchar_t* a_path)
-	{
-		if (!a_path) {
-			return nullptr;
-		}
-		if (auto* o = UE::StaticFindObject<UE::UObject>(nullptr, nullptr, a_path)) {
-			return o;
-		}
-		// not loaded yet: MakeSoftObjectPath -> Conv_SoftObjPathToSoftObjRef -> LoadAsset_Blocking (Menus Revamped)
-		static auto* lib = Class(L"/Script/Engine.KismetSystemLibrary");
-		auto*        cdo = lib ? lib->GetDefaultObject(false) : nullptr;
-		if (!cdo) {
-			return nullptr;
-		}
-		Call       mk(cdo, L"MakeSoftObjectPath");
-		Call       conv(cdo, L"Conv_SoftObjPathToSoftObjRef");
-		Call       load(cdo, L"LoadAsset_Blocking");
-		void*      path = mk.At("PathString");
-		const auto pathSize = mk.Size("ReturnValue");
-		const auto refSize = conv.Size("ReturnValue");
-		if (!mk || !conv || !load || !path || pathSize <= 0 || refSize <= 0 || conv.Size("SoftObjectPath") != pathSize || load.Size("Asset") != refSize) {
-			return nullptr;
-		}
-		new (path) UE::FString(a_path);   // never destroyed: a small one-time leak per asset (as in Menus Revamped)
-		mk.Run();
-		std::memcpy(conv.At("SoftObjectPath"), mk.At("ReturnValue"), static_cast<std::size_t>(pathSize));
-		conv.Run();
-		std::memcpy(load.At("Asset"), conv.At("ReturnValue"), static_cast<std::size_t>(refSize));
-		load.Run();
-		return load.Get<UE::UObject*>("ReturnValue");
-	}
-
 	bool SetFont(UE::UObject* a_textWidget, const wchar_t* a_fontAsset, const wchar_t* a_typeface, float a_size)
 	{
-		// a copy of the widget's FSlateFontInfo with another font object (and face) and size, handed to SetFont; the live
-		// property is not changed first (Menus Revamped: the setter may then see no change)
+		// edit a copy of the widget's FSlateFontInfo and hand it to SetFont (the setter ignores in-place changes)
 		static auto* info = UE::StaticFindObject<UE::UStruct>(nullptr, nullptr, L"/Script/SlateCore.SlateFontInfo");
-		auto*        font = Load(a_fontAsset);
-		if (!a_textWidget || !info || !font) {
+		if (!a_textWidget || !info) {
 			return false;
 		}
 		auto*      cls = a_textWidget->GetClass();
@@ -353,10 +304,12 @@ namespace ui
 		}
 		const auto*               current = reflect::At<std::uint8_t>(a_textWidget, fontOff);
 		std::vector<std::uint8_t> copy(current, current + fontSize);
-		std::memcpy(copy.data() + objOff, &font, sizeof(font));
-		if (a_typeface) {
-			const UE::FName face(a_typeface);
-			std::memcpy(copy.data() + faceOff, &face, sizeof(face));
+		if (auto* font = Load(a_fontAsset)) {
+			std::memcpy(copy.data() + objOff, &font, sizeof(font));
+			if (a_typeface) {
+				const UE::FName face(a_typeface);
+				std::memcpy(copy.data() + faceOff, &face, sizeof(face));
+			}
 		}
 		std::memcpy(copy.data() + sizeOff, &a_size, sizeof(a_size));
 		return CallFirst(a_textWidget, L"SetFont", copy.data(), copy.size());
@@ -364,7 +317,6 @@ namespace ui
 
 	bool RoundedBorder(UE::UObject* a_border, const float a_fill[4], const float a_outline[4], float a_width, float a_radius)
 	{
-		// Menus Revamped's RoundedBox (engine/UiWidgets.cpp), for a Border's Background brush instead of an Image's Brush
 		static auto* brushStruct = UE::StaticFindObject<UE::UStruct>(nullptr, nullptr, L"/Script/SlateCore.SlateBrush");
 		static auto* outlineStruct = UE::StaticFindObject<UE::UStruct>(nullptr, nullptr, L"/Script/SlateCore.SlateBrushOutlineSettings");
 		static auto* colorStruct = UE::StaticFindObject<UE::UStruct>(nullptr, nullptr, L"/Script/SlateCore.SlateColor");
@@ -387,14 +339,14 @@ namespace ui
 			rounding < 0 || width < 0 || spec < 0 || rule < 0) {
 			return false;
 		}
-		// built in a copy: the live brush is only changed through SetBrush
+		// edit a copy; the live brush only changes through SetBrush
 		const auto*               live = reflect::At<std::uint8_t>(a_border, brushOff);
 		std::vector<std::uint8_t> b(live, live + brushSize);
-		b[static_cast<std::size_t>(drawAs)] = 4;   // ESlateBrushDrawType::RoundedBox
+		b[drawAs] = 4;   // ESlateBrushDrawType::RoundedBox
 		std::memcpy(b.data() + tint + spec, a_fill, sizeof(float) * 4);
-		b[static_cast<std::size_t>(tint + rule)] = 0;   // ESlateColorStylingMode::UseColor_Specified
+		b[tint + rule] = 0;   // UseColor_Specified
 		std::memcpy(b.data() + outline + oColor + spec, a_outline, sizeof(float) * 4);
-		b[static_cast<std::size_t>(outline + oColor + rule)] = 0;
+		b[outline + oColor + rule] = 0;
 		if (radiiSize == 32) {
 			const double v[4] = { a_radius, a_radius, a_radius, a_radius };
 			std::memcpy(b.data() + outline + radii, v, sizeof(v));
@@ -402,7 +354,7 @@ namespace ui
 			const float v[4] = { a_radius, a_radius, a_radius, a_radius };
 			std::memcpy(b.data() + outline + radii, v, sizeof(v));
 		}
-		b[static_cast<std::size_t>(outline + rounding)] = 0;   // ESlateBrushRoundingType::FixedRadius
+		b[outline + rounding] = 0;   // ESlateBrushRoundingType::FixedRadius
 		std::memcpy(b.data() + outline + width, &a_width, sizeof(a_width));
 		return CallFirst(a_border, L"SetBrush", b.data(), b.size());
 	}

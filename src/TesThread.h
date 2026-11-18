@@ -1,33 +1,20 @@
 #pragma once
 
-// ============================================================================================================
-// The Gamebryo side's own thread. The remaster runs the TES simulation on a thread of its own, and the engine's
-// equipment path checks for it: an unequip called from the UE game thread (the pad read, ProcessEvent) ends in a
-// deliberate null write once GetCurrentThreadId() differs from the id the engine stored (TestBench crash record
-// 2026-09-29 08:43, OblivionRemastered-Win64-Shipping.exe+0x66AA468: `cmp eax, ebx; je; inc dword [0]`). Reads are
-// fine from anywhere; the inventory changes of a switch are not.
+// Task queue on the TES (Gamebryo) simulation thread. Equip / unequip MUST run here: the engine deliberately crashes
+// when they are called from another thread. Reads are safe from anywhere.
 //
-// A queue drained on that thread: the 'Oblivion Main loop' (the thread's FRunnable::Run) calls one function
-// unconditionally at the top of every iteration - found by byte pattern, hooked with MinHook - and the detour runs
-// the queued tasks after it. (The player's vtable Process(float) was tried first: it ran once per session, not per
-// frame.) OBSE64 has no task interface of its own.
-// ============================================================================================================
+// Hooks the one call the "Oblivion Main loop" makes at the top of every iteration (found by byte pattern).
+//
+// Adapted from Simple Loadout System (Oblivion Remastered) by ApocryphaRealm, GPL-3.0-or-later (see NOTICE.md).
+
+#include <functional>
 
 namespace testhread
 {
 	using Task = std::function<void()>;
 
-	bool Install();      // true when the loop call is hooked
+	bool Install();
 	bool Installed();
 	void Post(Task a_task);
-	void SetTick(Task a_tick);   // GearLoadouts: a function run on the TES thread every loop iteration; set before Install()
-
-	struct Status
-	{
-		bool          installed;
-		std::uint32_t thread;   // the id the detour first ran on (0 until it has)
-		std::uint64_t calls;
-		std::size_t   queued;
-	};
-	Status GetStatus();
+	void SetTick(Task a_tick);   // runs every iteration; set before Install()
 }

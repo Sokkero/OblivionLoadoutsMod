@@ -1,14 +1,11 @@
 #pragma once
 
-// Gear Loadouts - just enough Unreal reflection to read a property by NAME.
+// Minimal Unreal reflection: property offsets by name, object liveness, instance lookup.
+// CommonLibOB64 has no FProperty, so the FField chain is walked by hand (UE5 layout, proven by SelfCheck()).
+// Game thread only.
 //
-// Adapted from Simple Loadout System (Oblivion Remastered) by ApocryphaRealm, GPL-3.0-or-later (see NOTICE.md),
-// src/Reflect.h/.cpp. CommonLibOB64 has no FProperty: walk a struct's FField chain (next +0x18, name +0x20) and read
-// FProperty::Offset_Internal at +0x44, ElementSize at +0x34 (UE5's layout). SelfCheck() proves the layout on a known
-// property before anything trusts it. Modified 2026-11-17: moved out of Console.cpp; Size(), Usable() and Handle
-// added (the last two from Menus Revamped by cfa911, GPL-3.0-or-later, engine/Reflect.cpp).
-//
-// Game thread only (GameThread.h).
+// Adapted from Simple Loadout System (Oblivion Remastered) by ApocryphaRealm and Menus Revamped (Oblivion
+// Remastered) by cfa911, both GPL-3.0-or-later (see NOTICE.md).
 
 #include <string>
 #include <string_view>
@@ -18,13 +15,11 @@ namespace reflect
 {
 	std::string Utf8(const UE::FString& a_s);
 
-	std::int32_t Offset(UE::UStruct* a_struct, std::string_view a_name);   // -1 when there is no such property
-	std::int32_t Size(UE::UStruct* a_struct, std::string_view a_name);     // -1 when there is no such property
+	std::int32_t Offset(UE::UStruct* a_struct, std::string_view a_name);   // -1 when absent
+	std::int32_t Size(UE::UStruct* a_struct, std::string_view a_name);     // -1 when absent
+	std::int32_t FirstOffset(UE::UStruct* a_struct);                      // offset of the first property, -1 when none
 
-	bool SelfCheck();   // true once the layout is proven; false while not checkable yet or when it failed
-	bool Failed();      // the layout check ran and failed (nothing reflected may run)
-
-	bool Ok();          // SelfCheck() passed (cheap; does not run the check)
+	bool SelfCheck();   // true once the layout is proven; nothing reflected may run before that
 
 	template <class T>
 	T* At(void* a_base, std::int32_t a_offset)
@@ -32,21 +27,17 @@ namespace reflect
 		return a_base && a_offset >= 0 ? reinterpret_cast<T*>(static_cast<std::uint8_t*>(a_base) + a_offset) : nullptr;
 	}
 
-	// For an object read THIS frame from a live owner only (it reads the object's own index). Kept pointers: Handle.
-	bool IsLive(UE::UObject* a_obj);
-	// IsLive and not being destroyed (not Garbage / Unreachable / PendingKill, not BeginDestroyed / FinishDestroyed).
-	// A closing menu's widgets stay in their slots until GC purges them (Menus Revamped RMI-043).
-	bool Usable(UE::UObject* a_obj);
+	bool IsLive(UE::UObject* a_obj);   // still in its object-array slot
+	bool Usable(UE::UObject* a_obj);   // live and not being garbage collected or destroyed
 
-	std::vector<UE::UObject*> Instances(UE::UClass* a_class);   // every live instance, never the class default object
+	std::vector<UE::UObject*> Instances(UE::UClass* a_class);   // live instances, without the class default object
 
-	// A pointer kept across frames with the object-array slot it was found in (Menus Revamped). Get() asks the SLOT
-	// whether it still holds that object and never reads the object itself.
+	// A pointer kept across frames together with its object-array slot. Get() checks the slot, never the object.
 	struct Handle
 	{
 		UE::UObject* ptr = nullptr;
 		std::int32_t index = -1;
 	};
-	Handle       Hold(UE::UObject* a_live);   // a_live must be live now
+	Handle       Hold(UE::UObject* a_live);
 	UE::UObject* Get(const Handle& a_handle);   // nullptr once the slot holds anything else
 }

@@ -1,6 +1,6 @@
 #pragma once
 
-// UE headers BEFORE Windows.h: wingdi's TRUE/FALSE macros break the EName enum (TestBench, 2026-09-26).
+// UE headers before Windows.h: wingdi's TRUE/FALSE macros break the EName enum
 #include <UE/Unreal.h>
 #include <RE/Oblivion.h>
 #include <OBSE/OBSE.h>
@@ -13,9 +13,8 @@
 #endif
 #include <Windows.h>
 
-// wingdi.h defines ERROR as 0, which turns every REX::ERROR log call into a syntax error
 #ifdef ERROR
-#	undef ERROR
+#	undef ERROR   // wingdi.h; breaks REX::ERROR
 #endif
 
 #include <algorithm>
@@ -23,16 +22,13 @@
 #include <atomic>
 #include <chrono>
 #include <cstdint>
+#include <deque>
 #include <filesystem>
 #include <format>
-#include <cmath>
-#include <deque>
 #include <functional>
 #include <mutex>
-#include <optional>
 #include <string>
 #include <string_view>
-#include <thread>
 #include <unordered_map>
 #include <vector>
 
