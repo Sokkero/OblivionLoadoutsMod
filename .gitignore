@@ -15,3 +15,5 @@ vs*/
 compile_commands.json
 CLAUDE.md
 GearLoadouts.json
+
+release/GearLoadouts.dll

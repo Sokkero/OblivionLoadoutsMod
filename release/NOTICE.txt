@@ -1,0 +1,24 @@
+Gear Loadouts (Oblivion Remastered) - copyright and licence
+============================================================
+
+This work contains code adapted from Simple Loadout System (Oblivion Remastered),
+https://github.com/ApocryphaRealm/SimpleLoadoutSystemOR.
+
+This work contains code adapted from Menus Revamped (Oblivion Remastered),
+https://github.com/cfa911/Oblivion-Remastered---Mod---Menus-Revamped.
+
+
+This program is free software: you can redistribute it and/or modify it under the terms of the GNU General Public
+License as published by the Free Software Foundation, either version 3 of the License, or (at your option) any later
+version.
+
+This program is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the implied
+warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License for more details.
+
+You should have received a copy of the GNU General Public License along with this program (LICENSE.txt). If not, see
+<https://www.gnu.org/licenses/>.
+
+SPDX-License-Identifier: GPL-3.0-or-later
+
+The plugin links CommonLibOB64 (GPL-3.0), MinHook (BSD-2-Clause) and nlohmann/json (MIT). Notices:
+THIRD_PARTY_NOTICES.md in the source code, https://github.com/Sokkero/OblivionLoadoutsMod

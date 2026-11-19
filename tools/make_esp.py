@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-# Writes data/GearLoadouts.esp: one hidden token item whose count in the player's inventory is the active loadout + 1.
+# Writes release/GearLoadouts.esp: one hidden token item whose count in the player's inventory is the active loadout + 1.
 # The game keeps it in each save, so loading any save brings back the loadout that was active when it was made.
 #
 # The token is clothing with no body slot, no name and the Non-Playable flag: hidden in the inventory, never worn.
@@ -42,7 +42,7 @@ header = record(b"TES4", 0, b"".join([
     sub(b"SNAM", zstr("Gear Loadouts: remembers the active loadout in each save.")),
 ]))
 
-out = pathlib.Path(__file__).resolve().parent.parent / "data" / "GearLoadouts.esp"
+out = pathlib.Path(__file__).resolve().parent.parent / "release" / "GearLoadouts.esp"
 out.parent.mkdir(exist_ok=True)
 out.write_bytes(header + clothing)
 print(f"wrote {out} ({out.stat().st_size} bytes)")
