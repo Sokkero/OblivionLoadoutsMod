@@ -335,9 +335,22 @@ namespace ui
 		const auto width = reflect::Offset(outlineStruct, "Width");
 		const auto spec = reflect::Offset(colorStruct, "SpecifiedColor");
 		const auto rule = reflect::Offset(colorStruct, "ColorUseRule");
+		const auto useAlpha = reflect::Offset(outlineStruct, "bUseBrushTransparency");
 		if (brushOff < 0 || brushSize <= 0 || brushSize > 1024 || drawAs < 0 || tint < 0 || outline < 0 || radii < 0 || oColor < 0 ||
 			rounding < 0 || width < 0 || spec < 0 || rule < 0) {
 			return false;
+		}
+		static bool loggedNoAlpha = false;
+		if (useAlpha < 0 && !loggedNoAlpha) {
+			loggedNoAlpha = true;
+			logger::warn("ui: brush outlines cannot follow the widget opacity; button borders do not fade with the menu");
+		}
+		// Slate draws a rounded box outline without the widget's inherited opacity, so it would stay fully drawn while
+		// the menu fades, unless bUseBrushTransparency is set. That multiplies the outline alpha by the brush tint
+		// alpha, which includes our fill alpha: divided out here so the outline keeps its own alpha.
+		float outlineColor[4] = { a_outline[0], a_outline[1], a_outline[2], a_outline[3] };
+		if (useAlpha >= 0 && a_fill[3] > 0.001f) {
+			outlineColor[3] = a_outline[3] / a_fill[3];
 		}
 		// edit a copy; the live brush only changes through SetBrush
 		const auto*               live = reflect::At<std::uint8_t>(a_border, brushOff);
@@ -345,8 +358,11 @@ namespace ui
 		b[drawAs] = 4;   // ESlateBrushDrawType::RoundedBox
 		std::memcpy(b.data() + tint + spec, a_fill, sizeof(float) * 4);
 		b[tint + rule] = 0;   // UseColor_Specified
-		std::memcpy(b.data() + outline + oColor + spec, a_outline, sizeof(float) * 4);
+		std::memcpy(b.data() + outline + oColor + spec, outlineColor, sizeof(outlineColor));
 		b[outline + oColor + rule] = 0;
+		if (useAlpha >= 0) {
+			b[outline + useAlpha] = 1;   // the outline fades with the widget
+		}
 		if (radiiSize == 32) {
 			const double v[4] = { a_radius, a_radius, a_radius, a_radius };
 			std::memcpy(b.data() + outline + radii, v, sizeof(v));
