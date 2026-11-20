@@ -16,4 +16,4 @@ compile_commands.json
 CLAUDE.md
 GearLoadouts.json
 
-release/GearLoadouts.dll
+release/OblivionRemastered/Binaries/Win64/OBSE/Plugins/GearLoadouts.dll
